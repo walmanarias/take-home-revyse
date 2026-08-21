@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-4e3a0b70-74bf-4ad1-9e31-9ada49aba14a/styles.css">
+<script src="_ds/nocturne-4e3a0b70-74bf-4ad1-9e31-9ada49aba14a/_ds_bundle.js"></script>
+<style>
+  @keyframes shimmer { 0% { opacity: .28 } 50% { opacity: .6 } 100% { opacity: .28 } }
+  body { margin: 0 }
+</style>
+</helmet>
+<div style="min-height: 100vh; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); padding: 22px clamp(12px, 4vw, 48px) 64px">
+
+  <div style="display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px">
+    <h4 style="margin: 0; letter-spacing: -0.02em">Exchange Rates</h4>
+    <span style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-neutral-500)">Coinbase · {{ coinCount }} assets</span>
+  </div>
+  <p style="margin: 0 0 18px; font-size: 13px; color: var(--color-neutral-500); max-width: 62ch">Live USD and BTC rates. Cards stay usable when the feed slows or fails — last-known-good values remain, marked with their age.</p>
+
+  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px">
+    <div style="position: relative; flex: 1 1 240px; max-width: 340px">
+      <input class="input" type="text" value="{{ filter }}" onChange="{{ onFilter }}" placeholder="Filter by name or symbol — try “eth”" aria-label="Filter currencies" style="padding-right: 30px">
+      <span style="position: absolute; right: 9px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--color-neutral-600)">{{ matchCount }}</span>
+    </div>
+
+    <div class="seg" role="group" aria-label="Sort">
+      <label class="seg-opt"><input type="radio" name="sort" checked="{{ sortIsCustom }}" onChange="{{ onSortCustom }}">My order</label>
+      <label class="seg-opt"><input type="radio" name="sort" checked="{{ sortIsName }}" onChange="{{ onSortName }}">Name</label>
+      <label class="seg-opt"><input type="radio" name="sort" checked="{{ sortIsUsd }}" onChange="{{ onSortUsd }}">Price</label>
+      <label class="seg-opt"><input type="radio" name="sort" checked="{{ sortIsDelta }}" onChange="{{ onSortDelta }}">Change</label>
+    </div>
+
+    <div class="seg" role="group" aria-label="View">
+      <label class="seg-opt"><input type="radio" name="view" checked="{{ viewIsGrid }}" onChange="{{ onViewGrid }}">Grid</label>
+      <label class="seg-opt"><input type="radio" name="view" checked="{{ viewIsTable }}" onChange="{{ onViewTable }}">Table</label>
+    </div>
+
+    <button class="btn btn-secondary" onClick="{{ onRefresh }}" disabled="{{ refreshDisabled }}" title="{{ refreshTitle }}">{{ refreshLabel }}</button>
+
+    <label class="radio" style="gap: 7px; font-size: 13px; color: var(--color-neutral-400)">
+      <input type="checkbox" checked="{{ autoOn }}" onChange="{{ onToggleAuto }}"><span class="dot"></span>
+      Auto · {{ countdownLabel }}
+    </label>
+
+    <div style="margin-left: auto; display: flex; align-items: center; gap: 8px">
+      <span style="width: 7px; height: 7px; border-radius: 50%; background: {{ statusColor }}; box-shadow: 0 0 8px {{ statusColor }}"></span>
+      <span style="font-size: 12px; color: var(--color-neutral-400)">{{ statusLabel }}</span>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 8px 12px; margin-bottom: 14px; border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm)">
+    <span style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-neutral-600)">Request budget</span>
+    <div style="display: flex; align-items: center; gap: 4px" aria-label="Requests left this minute">
+      <sc-for list="{{ budgetPips }}" as="pip" hint-placeholder-count="10">
+        <span style="width: 12px; height: 5px; border-radius: 2px; background: {{ pip.bg }}"></span>
+      </sc-for>
+    </div>
+    <span style="font-size: 12px; font-variant-numeric: tabular-nums; color: var(--color-neutral-400)">{{ budgetLabel }}</span>
+    <span style="font-size: 12px; color: var(--color-neutral-500)">{{ roleLabel }}</span>
+  </div>
+
+  <sc-if value="{{ showBanner }}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; margin-bottom: 12px; border-radius: var(--radius-md); background: var(--color-accent-900); box-shadow: var(--shadow-sm)">
+      <span style="font-size: 12px; color: var(--color-accent-300); line-height: 1.5">{{ bannerText }}</span>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ filterActive }}" hint-placeholder-val="{{ false }}">
+    <p style="margin: 0 0 10px; font-size: 12px; color: var(--color-neutral-500)">Filtered view — dragging reorders within what you see; the {{ hiddenCount }} hidden cards keep the neighbour they follow.</p>
+  </sc-if>
+
+  <sc-if value="{{ viewIsGrid }}" hint-placeholder-val="{{ true }}">
+  <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 11px; align-items: start">
+    <sc-for list="{{ rows }}" as="row" hint-placeholder-count="8">
+      <div class="card" draggable="{{ row.draggable }}" onDragStart="{{ row.onDragStart }}" onDragOver="{{ row.onDragOver }}" onDragEnd="{{ row.onDragEnd }}" onDrop="{{ row.onDrop }}" style="padding: 12px 13px 11px; cursor: {{ row.cursor }}; opacity: {{ row.opacity }}; background: {{ row.cardBg }}; box-shadow: {{ row.cardEdge }}; transition: background 120ms ease, opacity 120ms ease, box-shadow 120ms ease">
+
+        <div style="display: flex; align-items: center; gap: 9px; margin-bottom: 12px">
+          <span style="width: 30px; height: 30px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 600; letter-spacing: -0.02em; color: var(--color-accent-300); background: var(--color-accent-900); box-shadow: inset 0 0 0 1px var(--color-accent-800)">{{ row.badge }}</span>
+          <span style="min-width: 0; flex: 1">
+            <span style="display: block; font-size: 14px; font-family: var(--font-heading); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ row.name }}</span>
+            <span style="display: block; font-size: 11px; color: var(--color-neutral-600); letter-spacing: 0.06em">{{ row.sym }}</span>
+          </span>
+          <button class="btn btn-ghost" onClick="{{ row.onFav }}" title="Pin to top" aria-label="Pin to top" style="width: 26px; height: 26px; flex: none; padding: 0; font-size: 13px; color: {{ row.favColor }}">★</button>
+          <span title="Drag to reorder" style="flex: none; font-size: 13px; letter-spacing: 2px; color: var(--color-neutral-700); user-select: none">⠿</span>
+        </div>
+
+        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 10px">
+          <span style="min-width: 0">
+            <span style="display: block; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--color-neutral-600); margin-bottom: 2px">USD</span>
+            <span style="display: block; font-family: var(--font-heading); font-weight: 500; font-size: 22px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: {{ row.valueColor }}">{{ row.usd }}</span>
+          </span>
+          <svg viewBox="0 0 68 20" preserveAspectRatio="none" style="width: 68px; height: 22px; flex: none; overflow: visible">
+            <polyline points="{{ row.spark }}" fill="none" stroke="{{ row.deltaColor }}" stroke-width="1.25" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline>
+          </svg>
+        </div>
+
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 10px; padding-top: 9px; background: linear-gradient(to right, transparent, var(--color-divider) 24px, var(--color-divider) calc(100% - 24px), transparent) no-repeat top / 100% 1px">
+          <span style="font-size: 13px; font-variant-numeric: tabular-nums; color: var(--color-neutral-500)">{{ row.btc }}</span>
+          <span style="font-size: 13px; font-variant-numeric: tabular-nums; color: {{ row.deltaColor }}">{{ row.delta }}</span>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ viewIsTable }}" hint-placeholder-val="{{ false }}">
+  <div style="overflow-x: auto">
+    <div style="min-width: 660px">
+      <div style="display: grid; grid-template-columns: 26px minmax(150px, 1.5fr) minmax(96px, 1fr) minmax(96px, 1fr) 92px 74px 30px; gap: 10px; align-items: center; padding: 0 4px 7px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-neutral-600); background: linear-gradient(to right, transparent, var(--color-divider) 48px, var(--color-divider) calc(100% - 48px), transparent) no-repeat bottom / 100% 1px">
+        <span></span><span>Asset</span><span>USD</span><span>BTC</span><span>Session Δ</span><span>Trend</span><span></span>
+      </div>
+
+      <sc-for list="{{ rows }}" as="row" hint-placeholder-count="8">
+        <div draggable="{{ row.draggable }}" onDragStart="{{ row.onDragStart }}" onDragOver="{{ row.onDragOver }}" onDragEnd="{{ row.onDragEnd }}" onDrop="{{ row.onDrop }}" style="display: grid; grid-template-columns: 26px minmax(150px, 1.5fr) minmax(96px, 1fr) minmax(96px, 1fr) 92px 74px 30px; gap: 10px; align-items: center; padding: 9px 4px; border-radius: var(--radius-sm); cursor: {{ row.cursor }}; opacity: {{ row.opacity }}; background: {{ row.rowBg }}; box-shadow: {{ row.rowEdge }}; transition: background 120ms ease, opacity 120ms ease" style-hover="background: color-mix(in srgb, var(--color-text) 5%, transparent)">
+          <span style="font-size: 13px; letter-spacing: 2px; color: var(--color-neutral-700); text-align: center; user-select: none">⠿</span>
+
+          <div style="display: flex; align-items: center; gap: 9px; min-width: 0">
+            <span style="width: 26px; height: 26px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 600; letter-spacing: -0.02em; color: var(--color-accent-300); background: var(--color-accent-900); box-shadow: inset 0 0 0 1px var(--color-accent-800)">{{ row.badge }}</span>
+            <span style="min-width: 0">
+              <span style="display: block; font-size: 14px; font-family: var(--font-heading); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ row.name }}</span>
+              <span style="display: block; font-size: 11px; color: var(--color-neutral-600); letter-spacing: 0.04em">{{ row.sym }}</span>
+            </span>
+          </div>
+
+          <span style="font-variant-numeric: tabular-nums; font-size: 14px; color: {{ row.valueColor }}">{{ row.usd }}</span>
+          <span style="font-variant-numeric: tabular-nums; font-size: 13px; color: var(--color-neutral-500)">{{ row.btc }}</span>
+          <span style="font-variant-numeric: tabular-nums; font-size: 13px; color: {{ row.deltaColor }}">{{ row.delta }}</span>
+
+          <svg viewBox="0 0 68 20" preserveAspectRatio="none" style="width: 68px; height: 20px; overflow: visible">
+            <polyline points="{{ row.spark }}" fill="none" stroke="{{ row.deltaColor }}" stroke-width="1.25" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline>
+          </svg>
+
+          <button class="btn btn-ghost" onClick="{{ row.onFav }}" title="Pin to top" aria-label="Pin to top" style="width: 26px; height: 26px; padding: 0; font-size: 13px; color: {{ row.favColor }}">★</button>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ empty }}" hint-placeholder-val="{{ false }}">
+    <p style="margin: 26px 4px; font-size: 13px; color: var(--color-neutral-600)">Nothing matches “{{ filter }}”.</p>
+  </sc-if>
+
+  <p style="margin: 22px 4px 0; font-size: 11px; line-height: 1.7; color: var(--color-neutral-700); max-width: 78ch">One tab holds the polling lease and every tab spends from the same 10-requests-per-minute bucket, so opening five tabs costs no more than one. Δ and trend are measured across this session's polls, not a rolling 24h window — the public rates endpoint carries no history. Order and pins persist locally; a drop is written before the animation settles.</p>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;pollSeconds&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:8,&quot;min&quot;:4,&quot;max&quot;:60,&quot;unit&quot;:&quot;s&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Data&quot;},&quot;stalenessLimitSeconds&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:120,&quot;min&quot;:15,&quot;max&quot;:600,&quot;unit&quot;:&quot;s&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Data&quot;},&quot;simulateOutage&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Data&quot;}}">
+const COINS = [
+  ["BTC", "Bitcoin"], ["ETH", "Ethereum"], ["SOL", "Solana"], ["XRP", "XRP"],
+  ["ADA", "Cardano"], ["DOGE", "Dogecoin"], ["AVAX", "Avalanche"], ["LINK", "Chainlink"],
+  ["DOT", "Polkadot"], ["LTC", "Litecoin"], ["BCH", "Bitcoin Cash"], ["ATOM", "Cosmos"],
+  ["UNI", "Uniswap"], ["XLM", "Stellar"], ["AAVE", "Aave"]
+];
+const NAMES = Object.fromEntries(COINS);
+const SYMS = COINS.map(c => c[0]);
+const CACHE_KEY = "nocturne.rates.cache.v1";
+const ORDER_KEY = "nocturne.rates.order.v1";
+const FAV_KEY = "nocturne.rates.favs.v1";
+const VIEW_KEY = "nocturne.rates.view.v1";
+const LEASE_KEY = "nocturne.rates.lease.v1";
+const BUDGET_KEY = "nocturne.rates.budget.v1";
+const TAB_ID = Math.random().toString(36).slice(2);
+const BUDGET_CAP = 10;          // requests…
+const BUDGET_WINDOW = 60000;    // …per minute, for the whole app across tabs
+const LEASE_TTL = 2500;         // a leader that stops heartbeating is replaced
+
+const readJSON = (k, fallback) => {
+  try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch (e) { return fallback; }
+};
+const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+const fmtUsd = n => {
+  if (!isFinite(n)) return "—";
+  if (n >= 1000) return "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (n >= 1) return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return "$" + n.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 5 });
+};
+const fmtBtc = n => {
+  if (!isFinite(n)) return "—";
+  if (n >= 1) return n.toFixed(4) + " ₿";
+  return n.toFixed(8).replace(/0+$/, "") + " ₿";
+};
+
+// ── shared request budget (leaky bucket in localStorage, shared by every tab) ──
+const budgetAt = now => {
+  const b = readJSON(BUDGET_KEY, null);
+  if (!b) return { tokens: BUDGET_CAP, ts: now };
+  const refilled = b.tokens + ((now - b.ts) / BUDGET_WINDOW) * BUDGET_CAP;
+  return { tokens: Math.max(0, Math.min(BUDGET_CAP, refilled)), ts: now };
+};
+const spendToken = now => {
+  const b = budgetAt(now);
+  if (b.tokens < 1) return false;
+  writeJSON(BUDGET_KEY, { tokens: b.tokens - 1, ts: now, by: TAB_ID });
+  return true;
+};
+
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    const cache = readJSON(CACHE_KEY, null);
+    const savedOrder = readJSON(ORDER_KEY, null);
+    const order = Array.isArray(savedOrder)
+      ? savedOrder.filter(s => SYMS.includes(s)).concat(SYMS.filter(s => !savedOrder.includes(s)))
+      : SYMS.slice();
+    this.state = {
+      order,
+      favs: readJSON(FAV_KEY, []).filter(s => SYMS.includes(s)),
+      rates: cache && cache.rates ? cache.rates : null,
+      fetchedAt: cache && cache.fetchedAt ? cache.fetchedAt : null,
+      fromCache: !!(cache && cache.rates),
+      history: cache && cache.history ? cache.history : {},
+      filter: "",
+      view: readJSON(VIEW_KEY, "grid") === "table" ? "table" : "grid",
+      sort: "custom",
+      auto: true,
+      refreshing: false,
+      failures: 0,
+      now: Date.now(),
+      dragSym: null,
+      overSym: null
+    };
+    this.pending = false;
+  }
+
+  componentDidMount() {
+    this.onStorage = e => {
+      if (e.key !== CACHE_KEY || !e.newValue) return;
+      try {
+        const c = JSON.parse(e.newValue);            // another tab fetched — adopt its result for free
+        if (c.fetchedAt && c.fetchedAt !== this.state.fetchedAt) {
+          this.setState({ rates: c.rates, fetchedAt: c.fetchedAt, history: c.history || {}, failures: 0, fromCache: false });
+        }
+      } catch (err) {}
+    };
+    window.addEventListener("storage", this.onStorage);
+
+    this.claimLease(Date.now());
+    if (this.isLeader) this.fetchRates();
+
+    this.tick = setInterval(() => {
+      const now = Date.now();
+      this.claimLease(now);
+      this.setState({ now });
+      const period = (this.props.pollSeconds ?? 8) * 1000;
+      const age = now - (this.state.fetchedAt || 0);
+      if (this.isLeader && this.state.auto && !this.pending && age >= period && now - (this.lastAttempt || 0) >= period) {
+        this.fetchRates();
+      }
+    }, 1000);
+  }
+  componentWillUnmount() {
+    clearInterval(this.tick);
+    window.removeEventListener("storage", this.onStorage);
+    const l = readJSON(LEASE_KEY, null);
+    if (l && l.id === TAB_ID) writeJSON(LEASE_KEY, { id: null, ts: 0 });
+  }
+
+  // Exactly one tab polls. The lease is a heartbeat: if the holder closes or
+  // freezes, the next tick past LEASE_TTL lets another tab take over.
+  claimLease(now) {
+    const l = readJSON(LEASE_KEY, null);
+    if (!l || !l.id || l.id === TAB_ID || now - l.ts > LEASE_TTL) {
+      writeJSON(LEASE_KEY, { id: TAB_ID, ts: now });
+      this.isLeader = true;
+    } else {
+      this.isLeader = false;
+    }
+    return this.isLeader;
+  }
+
+  async fetchRates() {
+    if (this.pending) return;
+    const now0 = Date.now();
+    // Manual and automatic fetches draw on the same cross-tab budget.
+    if (!spendToken(now0)) { this.setState({ now: now0, blocked: true }); return; }
+    this.pending = true;
+    this.lastAttempt = now0;
+    this.setState({ blocked: false });
+    this.setState({ refreshing: true });
+    try {
+      if (this.props.simulateOutage) throw new Error("simulated outage");
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 7000);
+      const res = await fetch("https://api.coinbase.com/v2/exchange-rates?currency=USD", { signal: ctl.signal });
+      clearTimeout(t);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const json = await res.json();
+      const raw = json.data.rates;
+      const btcPerUsd = parseFloat(raw.BTC);
+      const rates = {};
+      SYMS.forEach(s => {
+        const perUsd = parseFloat(raw[s]);
+        if (perUsd > 0) rates[s] = { usd: 1 / perUsd, btc: btcPerUsd / perUsd };
+      });
+      const now = Date.now();
+      const history = { ...this.state.history };
+      SYMS.forEach(s => {
+        if (!rates[s]) return;
+        const prev = history[s] || [];
+        history[s] = prev.concat(rates[s].usd).slice(-48);
+      });
+      writeJSON(CACHE_KEY, { rates, fetchedAt: now, history });
+      this.setState({ rates, fetchedAt: now, history, failures: 0, fromCache: false, refreshing: false });
+    } catch (e) {
+      this.setState(s => ({ failures: s.failures + 1, refreshing: false }));
+    } finally {
+      this.pending = false;
+    }
+  }
+
+  persistOrder(order) { writeJSON(ORDER_KEY, order); }
+
+  move(from, to) {
+    if (!from || !to || from === to) return;
+    this.setState(s => {
+      const order = s.order.slice();
+      const fi = order.indexOf(from);
+      const ti = order.indexOf(to);
+      if (fi < 0 || ti < 0) return null;
+      order.splice(fi, 1);
+      order.splice(order.indexOf(to) + (fi < ti ? 1 : 0), 0, from);
+      this.persistOrder(order);
+      return { order };
+    });
+  }
+
+  toggleFav(sym) {
+    this.setState(s => {
+      const favs = s.favs.includes(sym) ? s.favs.filter(x => x !== sym) : s.favs.concat(sym);
+      writeJSON(FAV_KEY, favs);
+      return { favs };
+    });
+  }
+
+  staleness() {
+    const { fetchedAt, now, failures } = this.state;
+    if (!fetchedAt) return { key: failures ? "down" : "loading", age: Infinity };
+    const age = (now - fetchedAt) / 1000;
+    const limit = this.props.stalenessLimitSeconds ?? 120;
+    if (age <= 12) return { key: "fresh", age };
+    if (age <= limit) return { key: "stale", age };
+    return { key: "expired", age };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const st = this.staleness();
+    const ageTxt = st.age === Infinity ? "" : st.age < 60 ? Math.round(st.age) + "s ago" : Math.round(st.age / 60) + "m ago";
+    const status = {
+      loading: { label: "Fetching first rates…", color: "var(--color-neutral-500)" },
+      fresh: { label: "Live · " + ageTxt, color: "var(--color-accent-400)" },
+      stale: { label: "Stale · " + ageTxt, color: "#d9c184" },
+      expired: { label: "Last known good · " + ageTxt, color: "#d98484" },
+      down: { label: "Feed unreachable", color: "#d98484" }
+    }[st.key];
+
+    const q = s.filter.trim().toLowerCase();
+    const visible = s.order.filter(sym => !q || sym.toLowerCase().includes(q) || NAMES[sym].toLowerCase().includes(q));
+    const favRank = sym => (s.favs.includes(sym) ? 0 : 1);
+    let ordered = visible.slice();
+    if (s.sort === "name") ordered.sort((a, b) => NAMES[a].localeCompare(NAMES[b]));
+    else if (s.sort === "usd") ordered.sort((a, b) => ((s.rates && s.rates[b] ? s.rates[b].usd : 0) - (s.rates && s.rates[a] ? s.rates[a].usd : 0)));
+    else if (s.sort === "delta") ordered.sort((a, b) => this.deltaOf(b) - this.deltaOf(a));
+    ordered.sort((a, b) => favRank(a) - favRank(b));
+
+    const dragEnabled = s.sort === "custom";
+    const dim = st.key === "expired" || st.key === "down";
+
+    const rows = ordered.map(sym => {
+      const r = s.rates && s.rates[sym];
+      const d = this.deltaOf(sym);
+      const hasD = isFinite(d) && d !== 0;
+      return {
+        sym,
+        name: NAMES[sym],
+        badge: sym.slice(0, 3),
+        usd: r ? fmtUsd(r.usd) : "—",
+        btc: r ? (sym === "BTC" ? "—" : fmtBtc(r.btc)) : "—",
+        delta: hasD ? (d > 0 ? "+" : "") + d.toFixed(2) + "%" : "—",
+        deltaColor: !hasD ? "var(--color-neutral-700)" : d > 0 ? "var(--color-accent-400)" : "#d98484",
+        valueColor: dim ? "var(--color-neutral-500)" : "var(--color-text)",
+        spark: this.sparkOf(sym),
+        favColor: s.favs.includes(sym) ? "var(--color-accent)" : "var(--color-neutral-700)",
+        draggable: dragEnabled,
+        cursor: dragEnabled ? "grab" : "default",
+        opacity: s.dragSym === sym ? 0.35 : 1,
+        cardBg: s.overSym === sym && s.dragSym && s.dragSym !== sym ? "color-mix(in srgb, var(--color-accent) 12%, var(--color-surface))" : "var(--color-surface)",
+        cardEdge: s.overSym === sym && s.dragSym && s.dragSym !== sym ? "inset 0 0 0 1px var(--color-accent-700)" : "var(--shadow-sm)",
+        rowBg: s.overSym === sym && s.dragSym && s.dragSym !== sym ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+        rowEdge: s.overSym === sym && s.dragSym && s.dragSym !== sym ? "inset 0 0 0 1px var(--color-accent-700)" : "none",
+        onFav: () => this.toggleFav(sym),
+        onDragStart: e => { if (!dragEnabled) return; e.dataTransfer.effectAllowed = "move"; this.setState({ dragSym: sym }); },
+        onDragOver: e => { if (!dragEnabled || !this.state.dragSym) return; e.preventDefault(); if (this.state.overSym !== sym) this.setState({ overSym: sym }); },
+        onDrop: e => { if (!dragEnabled) return; e.preventDefault(); this.move(this.state.dragSym, sym); this.setState({ dragSym: null, overSym: null }); },
+        onDragEnd: () => this.setState({ dragSym: null, overSym: null })
+      };
+    });
+
+    const period = this.props.pollSeconds ?? 8;
+    const left = Math.max(0, Math.ceil((period * 1000 - (s.now - (this.lastAttempt || s.now))) / 1000));
+
+    const tokens = budgetAt(s.now).tokens;
+    const whole = Math.floor(tokens);
+    const nextTokenIn = Math.ceil(((1 - (tokens - whole)) * (BUDGET_WINDOW / BUDGET_CAP)) / 1000);
+    const budgetPips = Array.from({ length: BUDGET_CAP }, (_, i) => ({
+      bg: i < whole ? "var(--color-accent-500)" : "var(--color-neutral-800)"
+    }));
+
+    return {
+      rows,
+      budgetPips,
+      budgetLabel: whole + "/" + BUDGET_CAP + " left this minute · +1 in " + nextTokenIn + "s",
+      roleLabel: this.isLeader ? "this tab polls for all tabs" : "another tab is polling — results arrive here free",
+      refreshDisabled: s.refreshing || whole < 1,
+      refreshLabel: whole < 1 ? "Wait " + nextTokenIn + "s" : "Refresh",
+      refreshTitle: whole < 1 ? "Budget spent — a request frees up in " + nextTokenIn + "s" : "Spend one request now",
+      coinCount: SYMS.length,
+      filter: s.filter,
+      matchCount: q ? ordered.length + "/" + SYMS.length : "",
+      empty: ordered.length === 0,
+      filterActive: !!q && s.order.length > ordered.length,
+      hiddenCount: s.order.length - ordered.length,
+      statusLabel: status.label,
+      statusColor: status.color,
+      autoOn: s.auto,
+      countdownLabel: s.auto ? left + "s" : "off",
+      refreshing: s.refreshing,
+      showBanner: dim || (!s.rates && s.failures > 0) || (s.fromCache && !s.fetchedAtFresh && st.key !== "fresh" && st.key === "loading"),
+      bannerText: !s.rates
+        ? "No cached rates on this device yet, and the feed isn't answering. Values stay blank rather than guessing — retrying every " + period + "s."
+        : "Showing the last values we trust, from " + ageTxt + ". Past two minutes we stop treating them as prices: figures dim and the dot turns red. Nothing here is an error page.",
+      viewIsGrid: s.view === "grid",
+      viewIsTable: s.view === "table",
+      onViewGrid: () => { writeJSON(VIEW_KEY, "grid"); this.setState({ view: "grid" }); },
+      onViewTable: () => { writeJSON(VIEW_KEY, "table"); this.setState({ view: "table" }); },
+      sortIsCustom: s.sort === "custom",
+      sortIsName: s.sort === "name",
+      sortIsUsd: s.sort === "usd",
+      sortIsDelta: s.sort === "delta",
+      onSortCustom: () => this.setState({ sort: "custom" }),
+      onSortName: () => this.setState({ sort: "name" }),
+      onSortUsd: () => this.setState({ sort: "usd" }),
+      onSortDelta: () => this.setState({ sort: "delta" }),
+      onFilter: e => this.setState({ filter: e.target.value }),
+      onToggleAuto: () => this.setState(x => ({ auto: !x.auto })),
+      onRefresh: () => this.fetchRates()
+    };
+  }
+
+  deltaOf(sym) {
+    const h = this.state.history[sym];
+    if (!h || h.length < 2 || !h[0]) return 0;
+    return ((h[h.length - 1] - h[0]) / h[0]) * 100;
+  }
+
+  sparkOf(sym) {
+    const h = (this.state.history[sym] || []).slice(-24);
+    if (h.length < 2) return "0,10 68,10";
+    const min = Math.min.apply(null, h), max = Math.max.apply(null, h);
+    const span = max - min || 1;
+    return h.map((v, i) => {
+      const x = (i / (h.length - 1)) * 68;
+      const y = 18 - ((v - min) / span) * 16;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+  }
+}
+
+</script>
+</body>
+</html>
