@@ -284,7 +284,7 @@ E2E layer exists in this pass — see Out of scope.
     thousands-grouped).
 53. **AC-53 (unit)** — Given `usd = 1000`, `formatUsd(usd) === "$1,000"` (tier boundary,
     inclusive of the ≥1000 tier).
-54. **AC-54 (unit)** — Given `usd = 1234.56`, `formatUsd(usd) === "$1,234.56"` (≥1 and <1000,
+54. **AC-54 (unit)** — Given `usd = 234.56`, `formatUsd(usd) === "$234.56"` (≥1 and <1000,
     2dp).
 55. **AC-55 (unit)** — Given `usd = 1`, `formatUsd(usd) === "$1.00"` (tier boundary, inclusive
     of the ≥1 tier).

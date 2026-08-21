@@ -29,3 +29,7 @@ const entry = 'app/actions/public/entry.ts'
 
 export const entryHref = await assetServer.getHref(entry)
 export const entryPreloads = await assetServer.getPreloads(entry)
+
+const tokensStylesheet = 'app/actions/public/rates/tokens.css'
+
+export const tokensHref = await assetServer.getHref(tokensStylesheet)
