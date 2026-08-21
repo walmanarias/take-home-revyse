@@ -23,7 +23,7 @@ export interface RatesCache {
 
 export const CACHE_KEY = 'nocturne.rates.cache.v1'
 
-function isRatesCache(value: unknown): value is RatesCache | null {
+export function isRatesCache(value: unknown): value is RatesCache | null {
   if (value === null) return true
   if (typeof value !== 'object') return false
   let candidate = value as Partial<RatesCache>

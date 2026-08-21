@@ -55,6 +55,45 @@ describe('coinbase.ts: fetchRates()', () => {
 
     await assert.rejects(() => fetchRates())
   })
+
+  it('AC-76 renders every symbol\'s btc as non-finite ("—") when the BTC rate is missing from the response', async (t) => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      jsonResponse({ data: { currency: 'USD', rates: { ETH: '0.00035000' } } }),
+    )
+
+    let result = await fetchRates()
+
+    assert.equal(Number.isFinite(result.rates.ETH!.btc), false)
+    assert.ok(Number.isFinite(result.rates.ETH!.usd))
+  })
+
+  it('AC-76 renders every symbol\'s btc as non-finite ("—") when the BTC rate is zero', async (t) => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      jsonResponse({ data: { currency: 'USD', rates: { BTC: '0', ETH: '0.00035000' } } }),
+    )
+
+    let result = await fetchRates()
+
+    assert.equal(Number.isFinite(result.rates.ETH!.btc), false)
+  })
+
+  it('AC-76 renders every symbol\'s btc as non-finite ("—") when the BTC rate is negative', async (t) => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      jsonResponse({ data: { currency: 'USD', rates: { BTC: '-0.00002000', ETH: '0.00035000' } } }),
+    )
+
+    let result = await fetchRates()
+
+    assert.equal(Number.isFinite(result.rates.ETH!.btc), false)
+  })
+
+  it('AC-76 never throws when mapping a response with an invalid BTC rate', async (t) => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      jsonResponse({ data: { currency: 'USD', rates: { BTC: 'not-a-number', ETH: '0.00035000' } } }),
+    )
+
+    await assert.doesNotReject(() => fetchRates())
+  })
 })
 
 function jsonResponse(body: unknown): Response {

@@ -31,6 +31,11 @@
   --color-accent-800: #423a6a;
   --color-accent-900: #2b2741;
 
+  /* Semantic additions (from the prototype): warning/stale and
+     negative/error. Positive change uses --color-accent-400 instead. */
+  --color-warning: #d9c184;
+  --color-negative: #d98484;
+
   --font-heading: 'Inter', system-ui, sans-serif;
   --font-heading-weight: 500;
   --font-body: 'Inter', system-ui, sans-serif;
@@ -49,6 +54,12 @@
   --shadow-sm: 0 0 0 1px #3f424d;
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0, 0, 0, 0.65);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 body {

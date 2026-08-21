@@ -44,12 +44,17 @@ export async function fetchRates(signal?: AbortSignal): Promise<FetchedRates> {
 
 function mapRates(raw: Record<string, string>): Record<string, { usd: number; btc: number }> {
   let btcPerUsd = Number(raw.BTC)
+  // A missing/zero/negative BTC rate makes every symbol's own BTC cross-rate
+  // meaningless (division by zero or a nonsensical sign) — mark it invalid
+  // (NaN) rather than propagate a broken number; format.ts's finiteness
+  // check already renders NaN as "—" (AC-76).
+  let btcRateValid = Number.isFinite(btcPerUsd) && btcPerUsd > 0
   let rates: Record<string, { usd: number; btc: number }> = {}
 
   for (let [sym, value] of Object.entries(raw)) {
     let perUsd = Number(value)
     if (Number.isFinite(perUsd) && perUsd > 0) {
-      rates[sym] = { usd: 1 / perUsd, btc: btcPerUsd / perUsd }
+      rates[sym] = { usd: 1 / perUsd, btc: btcRateValid ? btcPerUsd / perUsd : NaN }
     }
   }
 

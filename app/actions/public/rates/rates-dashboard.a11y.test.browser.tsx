@@ -83,6 +83,11 @@ describe('RatesDashboard: accessibility', () => {
     assert.match(accessibleName(pinButton), /Unpin/)
 
     let dragHandle = card.querySelector('[data-testid="drag-handle"]') as HTMLElement
+    let symbol = card.getAttribute('data-symbol') ?? ''
     assert.ok(accessibleName(dragHandle).length > 0)
+    assert.ok(
+      accessibleName(dragHandle).includes(name) && accessibleName(dragHandle).includes(symbol),
+      `expected drag handle name to reflect the symbol/name, got "${accessibleName(dragHandle)}"`,
+    )
   })
 })

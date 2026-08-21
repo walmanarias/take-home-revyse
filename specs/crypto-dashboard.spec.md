@@ -439,3 +439,10 @@ E2E layer exists in this pass — see Out of scope.
 All other risks flagged in the design brief (unit-level cross-tab simulation sufficiency, no
 cross-device sync) are settled decisions, not open questions, and are reflected directly in the
 Out of scope section above.
+
+## Amendments
+
+76. **AC-76 (unit)** — Given the Coinbase response's own `BTC` rate is missing, zero, or
+    negative, when `fetchRates()` maps the response, then every symbol's `btc` value is invalid
+    (non-finite, rendering `—` via `format.ts`'s finiteness check) rather than a divide-by-zero
+    or sign-flipped number, `usd` values are unaffected, and nothing throws.

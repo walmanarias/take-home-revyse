@@ -34,8 +34,14 @@ colocated test files out of the browser bundle — no new asset-server configura
 
 ## Consequences
 
-- One test framework, one config, no new dependency — everything runs via the existing
-  `npm test` (`node --test` through `remix/node-tsx`).
+- One test framework, one config — everything runs via the existing `npm test`
+  (`node --test` through `remix/node-tsx`), now across two phases: `remix test --type server`
+  (router + unit tests, no DOM) and `remix test --type browser` (component tests, real Chromium
+  via Playwright). Component tests genuinely exercise real DOM APIs (drag events, focus,
+  `localStorage`-shaped fakes) rather than a simulated DOM, at the cost of one new
+  `devDependency`, `playwright`, plus its installed Chromium binary — accepted because
+  `remix/ui/test`'s `render(...)` requires a real browser runtime, and this still avoids pulling
+  in a second, non-Remix test framework.
 - Deterministic, fast coverage of the hardest logic (budget/lease races) without any real
   timers or real `localStorage`.
 - Explicit gap, accepted for this pass: no real two-*browser*-tab test exercises the actual
