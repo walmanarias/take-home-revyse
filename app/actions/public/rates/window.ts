@@ -18,7 +18,11 @@ export interface WindowRange {
 }
 
 export function computeWindow(metrics: WindowMetrics): WindowRange {
-  let { scrollTop, viewportHeight, rowHeight, overscan, itemCount } = metrics
+  let { scrollTop, viewportHeight, overscan, itemCount } = metrics
+  // Guard against a non-positive row height (a degenerate/misconfigured
+  // input the tested cases never exercise) dividing by zero or inverting
+  // the range below.
+  let rowHeight = Math.max(1, metrics.rowHeight)
 
   let start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
   let end = Math.min(itemCount, Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscan)

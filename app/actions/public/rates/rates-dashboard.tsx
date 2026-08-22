@@ -45,7 +45,7 @@ import { formatBtc, formatDelta, formatUsd } from './format.ts'
 import { type KVStore, readJSON, writeJSON } from './persisted.ts'
 import { buildSearchIndex, matchesQuery } from './search-index.ts'
 import { type SortMode, sortSymbols } from './sort.ts'
-import { computeWindow } from './window.ts'
+import { computeWindow, type WindowRange } from './window.ts'
 import {
   autoLabelCss,
   badgeCss,
@@ -166,6 +166,15 @@ export interface RatesDashboardProps {
   // supply one) and a safe, documented degrade in a browser without the Web
   // Locks API.
   locks?: LocksPort
+  // Set only by `RatesDashboardEntry` (AC-100). A real client hydration's
+  // very first render must match the server's cold-start markup exactly —
+  // reading real persisted `view`/`scope` synchronously at setup would
+  // otherwise hand hydration a structurally different tree (a table instead
+  // of the SSR'd cards grid) and trigger a framework hydration-mismatch.
+  // Direct test mounts (`render(<RatesDashboard kv={...}/>)`) never set
+  // this, so they keep reading `view`/`scope` synchronously (AC-25..28/70,
+  // AC-77..96 all depend on that).
+  hydrating?: boolean
 }
 
 export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
@@ -173,6 +182,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let clock = handle.props.clock ?? Date.now
   let fetchImpl = handle.props.fetchImpl ?? (() => fetchRates())
   let locksPort = handle.props.locks
+  let hydrating = handle.props.hydrating ?? false
 
   let tabId = randomTabId()
   let budgetStore = createBudgetStore(kv, clock)
@@ -192,13 +202,20 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     (symbol) => ALL_SYMBOLS.includes(symbol) || knownUniverseAtSetup.includes(symbol),
   )
 
-  let validSymbolsForOrder = Array.from(new Set([...ALL_SYMBOLS, ...favs]))
-  let orderRecord = readOrderRecord(kv, validSymbolsForOrder, clock)
+  let orderRecord = readOrderRecord(kv, computeValidSymbolsForOrder(), clock)
   let order = orderRecord.order
   let orderUpdatedAt = orderRecord.updatedAt
 
-  let view = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
-  let scope = readJSON<Scope>(kv, SCOPE_KEY, 'curated', isScope)
+  // AC-100: a real hydration's first render must match the server's
+  // cold-start markup (always "cards"/"curated", since SSR never has
+  // localStorage) — so while hydrating, start cold and adopt the real
+  // persisted view/scope only after that first render has committed (see
+  // `start()`). A direct test mount (`hydrating` unset) reads them
+  // synchronously here, as every other test already depends on.
+  let persistedView = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
+  let persistedScope = readJSON<Scope>(kv, SCOPE_KEY, 'curated', isScope)
+  let view: ViewMode = hydrating ? 'cards' : persistedView
+  let scope: Scope = hydrating ? 'curated' : persistedScope
 
   let filter = ''
   let sort: SortMode = 'custom'
@@ -240,7 +257,32 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   }
 
   function start() {
+    // AC-100: now that the first (cold-matching) render has committed, adopt
+    // whatever view/scope was actually persisted — a no-op unless
+    // `hydrating` forced the cold start above.
+    if (hydrating && (view !== persistedView || scope !== persistedScope)) {
+      view = persistedView
+      scope = persistedScope
+      handle.update()
+    }
+
     addEventListeners(window, handle.signal, { storage: onStorage })
+
+    // AC-102 safety net: a windowed All-scope drag can auto-scroll the
+    // dragged row's own node out of the rendered slice (unmounted), and a
+    // real `dragend` dispatched on an already-detached source node may never
+    // reach any listener. `pointerup` always fires at the release point
+    // regardless of what happened to the drag source, so it's the one
+    // cleanup path guaranteed to run — a no-op whenever no drag is active.
+    addEventListeners(document, handle.signal, {
+      pointerup: () => {
+        if (!dragSym) return
+        dragSym = null
+        overSym = null
+        stopAutoScroll()
+        handle.update()
+      },
+    })
 
     // Defer the very first leadership/poll check to a real macrotask (not a
     // microtask) so a synchronous UI interaction immediately after mount
@@ -364,7 +406,28 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // `updatedAt` for this tab's own writes keeps every local reorder from
     // ever losing to its own prior write.
     orderUpdatedAt = Math.max(clock(), orderUpdatedAt + 1)
-    void writeOrder(kv, { schemaVersion: 2, updatedAt: orderUpdatedAt, order: nextOrder }, locksPort)
+    void writeOrder(
+      kv,
+      { schemaVersion: 2, updatedAt: orderUpdatedAt, order: nextOrder },
+      locksPort,
+    ).then((committed) => {
+      // A rejected write means a fresher record was already durable in
+      // storage by the time this one landed (AC-98) — keeping the local
+      // optimistic order in that case would silently diverge from what's
+      // actually persisted. Resync to the record that won instead.
+      if (!committed) resyncOrderFromStorage()
+    })
+  }
+
+  function resyncOrderFromStorage() {
+    let stored = readOrderRecord(kv, computeValidSymbolsForOrder(), clock)
+    order = stored.order
+    orderUpdatedAt = stored.updatedAt
+    handle.update()
+  }
+
+  function computeValidSymbolsForOrder(): string[] {
+    return Array.from(new Set([...ALL_SYMBOLS, ...favs]))
   }
 
   function computeTrackedSet(): Set<string> {
@@ -388,10 +451,16 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // universe symbol alphabetically. sortSymbols' own pin-to-top partition
     // then yields: pinned (master order) → remaining curated (master order)
     // → uncurated (alphabetical) — for every sort mode, not just "custom".
+    //
+    // `order` can carry a symbol pinned while in All scope that isn't one of
+    // the 15 curated symbols (it joins `order` so it's reorderable there,
+    // per togglePin). Curated scope must never render it (AC-101) — the
+    // curated branch intersects `order` with `ALL_SYMBOLS` rather than using
+    // it verbatim.
     let symbolsForSort =
       scope === 'all'
         ? [...order, ...universe.filter((symbol) => !order.includes(symbol)).sort((a, b) => a.localeCompare(b))]
-        : order
+        : order.filter((symbol) => ALL_SYMBOLS.includes(symbol))
     return sortSymbols(sort, symbolsForSort, favs, rates, deltas)
   }
 
@@ -505,6 +574,106 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         <span>Session Δ</span>
         <span>Trend</span>
         <span aria-hidden="true" />
+      </div>
+    )
+  }
+
+  // All-scope's windowed table body (ADR 0006, T2): the scroll viewport plus
+  // its top/bottom spacers and rendered slice. Extracted from the render
+  // closure since it's sizeable and carries its own event wiring (scroll +
+  // drag-edge auto-scroll + the AC-102 cleanup safety net), matching the
+  // file's existing pattern of thin, render-pass-value-parameterized helpers
+  // (`renderTableHeader`, `renderCard`) that still close over setup-scope
+  // state (`dragSym`, `sort`, `scrollTop`, ...).
+  function renderWindowedTable(
+    windowRange: WindowRange,
+    windowedSymbols: string[],
+    visibleCount: number,
+    dim: boolean,
+    effectiveView: ViewMode,
+    trackedSet: Set<string>,
+  ) {
+    return (
+      <div
+        data-testid="table-viewport"
+        mix={[
+          tableViewportCss,
+          on<HTMLElement, 'scroll'>('scroll', (event) => {
+            let node = event.currentTarget
+            let nextScrollTop = node.scrollTop
+            let nextHeight = node.clientHeight || viewportHeightPx
+            let nextRange = computeWindow({
+              scrollTop: nextScrollTop,
+              viewportHeight: nextHeight,
+              rowHeight: ROW_HEIGHT_PX,
+              overscan: OVERSCAN,
+              itemCount: visibleCount,
+            })
+            scrollTop = nextScrollTop
+            viewportHeightPx = nextHeight
+            if (
+              nextRange.startIndex !== windowRange.startIndex ||
+              nextRange.endIndex !== windowRange.endIndex
+            ) {
+              handle.update()
+            }
+          }),
+          on<HTMLElement, 'dragover'>('dragover', (event) => {
+            if (sort !== 'custom' || !dragSym) return
+            let rect = event.currentTarget.getBoundingClientRect()
+            let y = event.clientY
+            if (y - rect.top < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, -1)
+            else if (rect.bottom - y < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, 1)
+            else stopAutoScroll()
+          }),
+          // AC-102: the viewport is always mounted for the lifetime of the
+          // windowed table, unlike any individual row — auto-scroll can move
+          // the dragged row's own node out of the rendered window, so
+          // `dragend`/an out-of-bounds `dragleave`/`drop` reaching the
+          // dragged row's own (possibly already-unmounted) handle is not a
+          // reliable cleanup path on its own. These mirror that cleanup on
+          // an ancestor that never unmounts.
+          on<HTMLElement, 'dragend'>('dragend', () => {
+            stopAutoScroll()
+            if (!dragSym) return
+            dragSym = null
+            overSym = null
+            handle.update()
+          }),
+          on<HTMLElement, 'dragleave'>('dragleave', (event) => {
+            stopAutoScroll()
+            let related = event.relatedTarget as Node | null
+            if (related && event.currentTarget.contains(related)) return
+            if (!dragSym) return
+            dragSym = null
+            overSym = null
+            handle.update()
+          }),
+          on<HTMLElement, 'drop'>('drop', () => {
+            stopAutoScroll()
+            if (!dragSym) return
+            dragSym = null
+            overSym = null
+            handle.update()
+          }),
+        ]}
+      >
+        <div mix={tableInnerCss}>
+          {renderTableHeader()}
+          <div
+            data-testid="window-spacer-top"
+            data-row-count={String(windowRange.startIndex)}
+            style={{ height: `${windowRange.topSpacerPx}px` }}
+          />
+          {windowedSymbols.map((symbol) =>
+            renderCard(symbol, dim, '', effectiveView, trackedSet.has(symbol)),
+          )}
+          <div
+            data-testid="window-spacer-bottom"
+            data-row-count={String(visibleCount - windowRange.endIndex)}
+            style={{ height: `${windowRange.bottomSpacerPx}px` }}
+          />
+        </div>
       </div>
     )
   }
@@ -724,10 +893,19 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
 
     // Windowing only applies to All scope's forced table view (ADR 0006) —
     // curated-scope table view still renders its full (small) list.
+    //
+    // `scrollTop` only changes on a real `scroll` event, but `visibleCount`
+    // can shrink for reasons that never fire one (typing a filter, switching
+    // scope) — recomputing against a now-stale, too-deep `scrollTop` would
+    // hand computeWindow a start clamped past the new (smaller) item count,
+    // producing a false-empty window (AC-97). Clamping it against the
+    // current item count's actual max scroll extent here, in the render
+    // pass, fixes that for every reason the count can change, not just a
+    // scroll event.
     let windowRange =
       scope === 'all'
         ? computeWindow({
-            scrollTop,
+            scrollTop: clampScrollTop(scrollTop, visibleCount, viewportHeightPx),
             viewportHeight: viewportHeightPx,
             rowHeight: ROW_HEIGHT_PX,
             overscan: OVERSCAN,
@@ -874,59 +1052,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
             {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, effectiveView, true))}
           </div>
         ) : scope === 'all' && windowRange ? (
-          <div
-            data-testid="table-viewport"
-            mix={[
-              tableViewportCss,
-              on<HTMLElement, 'scroll'>('scroll', (event) => {
-                let node = event.currentTarget
-                let nextScrollTop = node.scrollTop
-                let nextHeight = node.clientHeight || viewportHeightPx
-                let nextRange = computeWindow({
-                  scrollTop: nextScrollTop,
-                  viewportHeight: nextHeight,
-                  rowHeight: ROW_HEIGHT_PX,
-                  overscan: OVERSCAN,
-                  itemCount: visibleCount,
-                })
-                scrollTop = nextScrollTop
-                viewportHeightPx = nextHeight
-                if (
-                  nextRange.startIndex !== windowRange!.startIndex ||
-                  nextRange.endIndex !== windowRange!.endIndex
-                ) {
-                  handle.update()
-                }
-              }),
-              on<HTMLElement, 'dragover'>('dragover', (event) => {
-                if (sort !== 'custom' || !dragSym) return
-                let rect = event.currentTarget.getBoundingClientRect()
-                let y = event.clientY
-                if (y - rect.top < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, -1)
-                else if (rect.bottom - y < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, 1)
-                else stopAutoScroll()
-              }),
-              on<HTMLElement, 'dragleave'>('dragleave', () => stopAutoScroll()),
-              on<HTMLElement, 'drop'>('drop', () => stopAutoScroll()),
-            ]}
-          >
-            <div mix={tableInnerCss}>
-              {renderTableHeader()}
-              <div
-                data-testid="window-spacer-top"
-                data-row-count={String(windowRange.startIndex)}
-                style={{ height: `${windowRange.topSpacerPx}px` }}
-              />
-              {windowedSymbols.map((symbol) =>
-                renderCard(symbol, dim, '', effectiveView, trackedSet.has(symbol)),
-              )}
-              <div
-                data-testid="window-spacer-bottom"
-                data-row-count={String(visibleCount - windowRange.endIndex)}
-                style={{ height: `${windowRange.bottomSpacerPx}px` }}
-              />
-            </div>
-          </div>
+          renderWindowedTable(windowRange, windowedSymbols, visibleCount, dim, effectiveView, trackedSet)
         ) : (
           <div mix={tableWrapCss}>
             <div mix={tableInnerCss}>
@@ -967,7 +1093,11 @@ function renderTableRow(card: CardAssembly) {
       style={card.containerStyle}
       mix={[tableRowCss, ...card.dragMixins]}
     >
-      {card.dragHandle}
+      {/* A handle-less (untracked All-scope) row still needs a grid child
+          occupying the handle column — an empty placeholder, not a missing
+          child — or the grid's implicit auto-placement shifts every
+          following cell one column left (AC-99). */}
+      {card.dragHandle ?? <span aria-hidden="true" />}
       <span mix={tableAssetCellCss}>
         {card.badge}
         {card.titles}
@@ -1025,7 +1155,7 @@ export const RatesDashboardEntry = clientEntry(import.meta.url, function RatesDa
   // clientEntry prop-serialization boundary (this call only ever happens in
   // the browser, after hydration; `createLocksPort()` itself is SSR-safe).
   let locks = createLocksPort()
-  return () => <RatesDashboard locks={locks} />
+  return () => <RatesDashboard locks={locks} hydrating />
 })
 
 // ----- helpers -----
@@ -1040,6 +1170,15 @@ function createDefaultKv(): KVStore {
     getItem: () => null,
     setItem: () => {},
   }
+}
+
+// Clamps a (possibly stale) scrollTop to the current item count's actual
+// scrollable extent, so a render triggered by something other than a scroll
+// event (a filter keystroke, a scope switch) never hands computeWindow a
+// start position past the end of a just-shrunk list (AC-97).
+function clampScrollTop(scrollTop: number, itemCount: number, viewportHeight: number): number {
+  let maxScrollTop = Math.max(0, itemCount * ROW_HEIGHT_PX - viewportHeight)
+  return Math.min(scrollTop, maxScrollTop)
 }
 
 function randomTabId(): string {
@@ -1084,14 +1223,17 @@ function parseOrderRecordPayload(raw: string): OrderRecord | null {
 
 // Web Locks API port (ADR 0007): guarded so SSR and browsers without the API
 // silently degrade to writeOrder's unlocked path — no crash, no feature loss
-// beyond the lock's collision protection ("no error page, ever").
+// beyond the lock's collision protection ("no error page, ever"). Typed
+// directly against DOM's own `Navigator.locks`/`LockManager` rather than a
+// widening `as unknown` cast, now that `LocksPort.request`'s callback shape
+// matches the real `LockGrantedCallback` signature.
 function createLocksPort(): LocksPort | undefined {
   if (typeof navigator === 'undefined') return undefined
-  let manager = (navigator as unknown as { locks?: LocksPort }).locks
+  let manager = navigator.locks
   if (!manager) return undefined
   return {
-    request<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
-      return manager!.request(name, fn)
+    request<T>(name: string, fn: (lock?: Lock | null) => Promise<T> | T): Promise<T> {
+      return manager.request(name, fn)
     },
   }
 }

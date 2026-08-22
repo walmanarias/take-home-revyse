@@ -423,17 +423,18 @@ E2E layer exists in this pass — see Out of scope.
   per-browser-profile by design.
 - **Real multi-browser-tab E2E.** Per ADR 0004, cross-tab races (lease, budget, cache adoption)
   are covered only by unit/component tests with injected storage and clock (AC-7, AC-14–AC-19),
-  not by two real `window` objects or a Playwright-style runner. No AC in this spec is tagged
-  (E2E).
+  not by two real `window` objects or a Playwright-style runner. *(Amended 2026-08-21: AC-100
+  is now the spec's single (E2E) criterion — single-tab reload/hydration only; multi-tab E2E
+  remains out of scope.)*
 - **Third-party icon/coin-logo assets.** Coin badges are the first three letters of the symbol
   on an accent-900 disc; no external image assets are fetched or tested.
 
 ## Definition of Done
 
-- [ ] Every AC-1..AC-96 (including all Amendments) maps to at least one passing test at its
-      tagged layer (unit / router / component).
-- [ ] No (E2E) tests are required for this feature (see Out of scope); if a future pass adds
-      real-browser coverage it is additive, not a gate here.
+- [ ] Every AC-1..AC-103 (including all Amendments) maps to at least one passing test at its
+      tagged layer (unit / router / component / E2E).
+- [ ] AC-100 is this spec's single (E2E) criterion (added 2026-08-21 for the hydration/reload
+      defect class); all other real-browser coverage remains component-level.
 - [ ] `npm test` passes with zero failing/skipped tests among the above.
 - [ ] `npm run typecheck` passes with no new errors.
 - [ ] `README.md` contains the "Tension Decisions" section per AC-74/AC-75 (checked by its own
@@ -553,3 +554,48 @@ CONV-testing-4.
     interaction (optimistic) and the v2 record is written with only the order key touched;
     given a `storage` event delivering a newer v2 record from another tab, then the displayed
     order updates to it without any fetch.
+
+**Hardening amendments (code-review findings on the T2/T3 implementation, 2026-08-21).**
+
+97. **AC-97 (component)** — Given All scope with the table viewport scrolled deep (large
+    `scrollTop`), when the visible item count shrinks for a non-scroll reason — typing a filter
+    that matches only a few rows, or switching scope — then the matching rows render
+    immediately in that same update (the window is clamped/recomputed against the new item
+    count); a false-empty list state must never appear while matches exist, and no native
+    `scroll` event is required to correct it.
+98. **AC-98 (unit)** — Given `writeOrder` is called while the stored v2 record is strictly
+    fresher than the candidate, then it reports non-committed (and reports committed in the
+    normal case); **(component)** given a stored v2 record fresher than anything the tab's
+    clock can produce, when the user reorders, then after the rejected write the displayed
+    order resyncs to the stored (durable) record rather than silently keeping the divergent
+    optimistic order.
+
+**Hardening amendments (visual-QA findings on the T2/T3 implementation, 2026-08-21).** These
+introduce this spec's first **(E2E)** test (AC-100): the reload/hydration defect class is
+invisible to client-only component mounts, and `remix test` natively serves `*.test.e2e.*`
+files through Playwright — the Out of scope "no E2E" entry is amended accordingly.
+
+99. **AC-99 (component)** — Given an All-scope row whose symbol is neither curated nor pinned
+    (no drag handle), when it renders in table view, then every cell occupies its correct grid
+    column — the handle slot renders an empty placeholder (not a missing child), so
+    badge/name, USD, BTC, Δ, trend, and pin cells never shift columns relative to a
+    handle-bearing row.
+100. **AC-100 (E2E)** — Given a served page whose browser has persisted `scope = "all"` and
+    `view = "table"` (set via `localStorage` in a real browser context), when the page is
+    loaded/reloaded, then after hydration the dashboard shows the persisted All/table state,
+    the DOM contains exactly one rendered dashboard tree (no duplicate/ghost row fragments),
+    and the console records no framework hydration-mismatch errors.
+101. **AC-101 (component)** — Given an uncurated symbol pinned while in All scope, when the
+    user switches to Curated scope, then exactly the 15 `currencies.ts` symbols render (the
+    pinned uncurated symbol does not leak in), and returning to All scope still shows it
+    pinned.
+102. **AC-102 (component)** — Given a drag in the windowed All-scope table where edge
+    auto-scroll has engaged and the dragged row's node has scrolled out of the rendered
+    window (unmounted), when the drag ends without a valid drop (dragend/cancel outside any
+    row), then auto-scroll stops, drag state resets (no row remains dimmed at reduced
+    opacity), and the next interaction behaves normally — cleanup listeners must live on an
+    always-mounted ancestor, not only on the dragged row's own node.
+103. **AC-103 (component)** — Given All scope forces table view, then the disabled Cards
+    option is visibly distinct from an enabled inactive segmented button (the segmented
+    control's `:disabled` treatment matches the Refresh button's: reduced opacity,
+    `not-allowed` cursor).

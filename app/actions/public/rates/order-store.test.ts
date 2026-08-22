@@ -27,6 +27,25 @@ describe('order-store.ts: readOrderRecord()', () => {
 })
 
 describe('order-store.ts: writeOrder()', () => {
+  it('AC-98 reports whether the write committed: false when the stored record is strictly fresher, true otherwise', async () => {
+    let kv = createFakeKV()
+
+    let fresher: OrderRecord = { schemaVersion: 2, updatedAt: T0 + 100, order: ['A'] }
+    let committedFresher = await writeOrder(kv, fresher)
+    assert.equal(committedFresher, true)
+
+    let stale: OrderRecord = { schemaVersion: 2, updatedAt: T0 + 50, order: ['B'] }
+    let committedStale = await writeOrder(kv, stale)
+    assert.equal(committedStale, false)
+    // The rejected write must never overwrite the fresher stored record.
+    assert.deepEqual(JSON.parse(kv.getItem(ORDER_V2_KEY) ?? 'null'), fresher)
+
+    let newer: OrderRecord = { schemaVersion: 2, updatedAt: T0 + 200, order: ['C'] }
+    let committedNewer = await writeOrder(kv, newer)
+    assert.equal(committedNewer, true)
+    assert.deepEqual(JSON.parse(kv.getItem(ORDER_V2_KEY) ?? 'null'), newer)
+  })
+
   it('AC-93 resolves two concurrent writeOrder calls deterministically by updatedAt, not call order', async () => {
     let kv = createFakeKV()
     let locks = createSerializingLocksPort()

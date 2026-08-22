@@ -1,13 +1,11 @@
 // Sort strategies (Strategy pattern) + pin-to-top decorator. Pure — no DOM,
 // no clock, no I/O.
 
-import { DISPLAY_NAMES } from './currencies.ts'
+import { displayNameFor } from './currencies.ts'
 
 export type SortMode = 'custom' | 'name' | 'usd' | 'delta'
 
 type RatesMap = Record<string, { usd: number; btc: number }> | null
-
-const NAMES = DISPLAY_NAMES as Record<string, string>
 
 function comparatorFor(
   mode: SortMode,
@@ -16,7 +14,7 @@ function comparatorFor(
 ): ((a: string, b: string) => number) | null {
   switch (mode) {
     case 'name':
-      return (a, b) => (NAMES[a] ?? a).localeCompare(NAMES[b] ?? b)
+      return (a, b) => displayNameFor(a).localeCompare(displayNameFor(b))
     case 'usd':
       return (a, b) => (rates?.[b]?.usd ?? 0) - (rates?.[a]?.usd ?? 0)
     case 'delta':

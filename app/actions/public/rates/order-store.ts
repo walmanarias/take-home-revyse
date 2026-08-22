@@ -14,10 +14,14 @@ export interface OrderRecord {
 /**
  * Structural port over `navigator.locks.request` so production code can
  * inject the real Web Locks API and tests can inject a deterministic fake —
- * see `test/support/fakes.ts`'s `createSerializingLocksPort()`.
+ * see `test/support/fakes.ts`'s `createSerializingLocksPort()`. `fn`'s
+ * signature mirrors `LockGrantedCallback` (`(lock) => ...`) so a real
+ * `LockManager` can be passed through without a shape-widening cast; the
+ * `lock` parameter is optional since callers here (`writeOrder`'s `commit`)
+ * never need it — only its presence in the callback shape.
  */
 export interface LocksPort {
-  request<T>(name: string, fn: () => Promise<T> | T): Promise<T>
+  request<T>(name: string, fn: (lock?: Lock | null) => Promise<T> | T): Promise<T>
 }
 
 export const ORDER_KEY = 'nocturne.rates.order.v1'
@@ -74,19 +78,25 @@ export function readOrderRecord(
  * the value already in storage. With no `LocksPort` (SSR, or a browser
  * without the Web Locks API), commits directly — today's shipped behavior,
  * unguarded but never throwing.
+ *
+ * Resolves `true` when the record was committed, `false` when a fresher
+ * stored record won and the write was rejected — the caller (e.g.
+ * `rates-dashboard.tsx`'s `persistOrder`) uses this to resync its own
+ * optimistic state to the durable record on rejection (AC-98) instead of
+ * silently drifting from what's actually stored.
  */
-export async function writeOrder(kv: KVStore, record: OrderRecord, locks?: LocksPort): Promise<void> {
+export async function writeOrder(kv: KVStore, record: OrderRecord, locks?: LocksPort): Promise<boolean> {
   let commit = () => {
     let current = readStoredRecord(kv)
-    if (current && current.updatedAt >= record.updatedAt) return
+    if (current && current.updatedAt >= record.updatedAt) return false
     writeJSON(kv, ORDER_V2_KEY, record)
+    return true
   }
 
   if (locks) {
-    await locks.request(LOCK_NAME, commit)
-  } else {
-    commit()
+    return await locks.request(LOCK_NAME, commit)
   }
+  return commit()
 }
 
 /**

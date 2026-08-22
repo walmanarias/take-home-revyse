@@ -87,6 +87,10 @@ export const segButtonCss = css({
   fontSize: '13px',
   color: 'var(--color-text)',
   '&[aria-pressed="true"]': { color: 'var(--color-accent)', boxShadow: 'inset 0 0 0 1px var(--color-accent)' },
+  // Matches btnCss's own :disabled treatment (AC-103) — a scope-forced
+  // disabled option (e.g. Cards while All scope locks table view) must read
+  // as visibly disabled, not just inert.
+  '&:disabled': { opacity: 0.45, cursor: 'not-allowed' },
 })
 export const btnCss = css({
   boxSizing: 'border-box',
