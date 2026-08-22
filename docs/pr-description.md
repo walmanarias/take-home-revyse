@@ -17,7 +17,7 @@ _Screenshots/videos to be added_
 - 🧪 **Test harness fix** — `npm test` now runs the real `remix test` CLI (the scaffold's `node --test` script never executed `remix/test` suite bodies); `playwright` devDependency added; component tests follow the `*.test.browser.tsx` convention and run in Chromium.
 - ✨ **Curated 15 / All scope + windowed table (T2)** — full ~600-symbol universe from the same response, bounded-DOM windowed rendering with edge auto-scroll, index-driven filtering (AC-83..91).
 - ✨ **Durable order (T3)** — lock-protected versioned `order.v2` record with cross-tab last-write-wins adoption and losing-tab resync (AC-92..98).
-- 📝 **`README.md`** — required "Tension Decisions" section covering T1–T5, all five implemented.
+- 📝 **`README.md`** — setup instructions, decisions & trade-offs (one bullet per ADR), and the required "Tension Decisions" section covering T1–T5 (T1/T4 the two chosen; all five implemented).
 - 📝 **`docs/`** — design brief, ADRs 0001–0007, and the approved spec with amendment protocol.
 
 ## 📐 Business Rules
