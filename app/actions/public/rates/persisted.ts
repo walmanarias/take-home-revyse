@@ -40,7 +40,7 @@ export function writeJSON<T>(kv: KVStore, key: string, value: T): void {
   }
 }
 
-function isStringArray(value: unknown): value is string[] {
+export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 

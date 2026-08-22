@@ -42,6 +42,37 @@ function fetch300(clock: () => number) {
   return async () => ({ rates: build300SymbolRates(), fetchedAt: clock() })
 }
 
+/**
+ * Scrolls the windowed table until `symbol` is in the rendered slice.
+ *
+ * How many rows the initial window covers is a function of the viewport
+ * height and the row height, so a test that needs one specific row must
+ * scroll to it rather than assume it happens to land in the first slice.
+ * Scrolls half a viewport at a time so rows just above the target (e.g. the
+ * curated block preceding the first uncurated symbol) stay rendered too.
+ */
+async function scrollSymbolIntoWindow(
+  result: { $(selector: string): Element | null; act(fn: () => void): Promise<unknown> },
+  symbol: string,
+): Promise<Element> {
+  let selector = `[data-testid="asset-card"][data-symbol="${symbol}"]`
+  let viewport = result.$('[data-testid="table-viewport"]') as HTMLElement
+  assert.ok(viewport, 'expected a [data-testid="table-viewport"] scroll container')
+
+  for (let step = 0; step < 40; step++) {
+    let row = result.$(selector)
+    if (row) return row
+    await result.act(() => {
+      viewport.scrollTop += Math.max(80, Math.floor((viewport.clientHeight || 480) / 2))
+      viewport.dispatchEvent(new Event('scroll', { bubbles: true }))
+    })
+  }
+
+  let found = result.$(selector)
+  assert.ok(found, `expected to reach the ${symbol} row by scrolling the windowed table`)
+  return found!
+}
+
 describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
   it('AC-85 exposes a Curated 15/All scope toggle, defaults to curated, and persists/falls back safely', async (t) => {
     let kv = createFakeKV()
@@ -111,8 +142,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
     assert.match(counterText, /\/300$/)
 
     await result.act(() => setInputValue(input, ''))
-    let uncuratedRow = result.$('[data-testid="asset-card"][data-symbol="ZZZ000"]')
-    assert.ok(uncuratedRow, 'expected the uncurated ZZZ000 row to be reachable in the default window')
+    let uncuratedRow = await scrollSymbolIntoWindow(result, 'ZZZ000')
     assert.equal(uncuratedRow?.getAttribute('data-name'), 'ZZZ000')
     assert.equal(uncuratedRow?.querySelector('[data-testid="delta-value"]')?.textContent, '—')
   })
@@ -235,8 +265,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
     await result.act(() => allOption.click())
     await result.act(() => (result.$('[data-testid="sort-custom"]') as HTMLButtonElement).click())
 
-    let uncuratedRow = result.$('[data-testid="asset-card"][data-symbol="ZZZ000"]')
-    assert.ok(uncuratedRow, 'expected the uncurated ZZZ000 row to be reachable in the default window')
+    let uncuratedRow = await scrollSymbolIntoWindow(result, 'ZZZ000')
     assert.equal(uncuratedRow?.querySelector('[data-testid="drag-handle"]'), null)
 
     let pinButton = uncuratedRow?.querySelector('[data-testid="pin-button"]') as HTMLElement
@@ -270,12 +299,11 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
     assert.ok(allOption, 'expected a [data-testid="scope-toggle-all"] option')
     await result.act(() => allOption.click())
 
-    let uncuratedRow = result.$('[data-testid="asset-card"][data-symbol="ZZZ000"]') as HTMLElement
+    let uncuratedRow = (await scrollSymbolIntoWindow(result, 'ZZZ000')) as HTMLElement
     let curatedRow = result.$(
       '[data-testid="asset-card"]:not([data-symbol="ZZZ000"])',
     ) as HTMLElement
-    assert.ok(uncuratedRow, 'expected the uncurated ZZZ000 row to be reachable in the default window')
-    assert.ok(curatedRow, 'expected at least one curated (handle-bearing) row in the default window')
+    assert.ok(curatedRow, 'expected at least one curated (handle-bearing) row alongside it')
     assert.equal(uncuratedRow.querySelector('[data-testid="drag-handle"]'), null)
     assert.ok(curatedRow.querySelector('[data-testid="drag-handle"]'))
 
@@ -308,8 +336,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
     assert.ok(allOption, 'expected a [data-testid="scope-toggle-all"] option')
     await result.act(() => allOption.click())
 
-    let uncuratedRow = result.$('[data-testid="asset-card"][data-symbol="ZZZ000"]')
-    assert.ok(uncuratedRow, 'expected the uncurated ZZZ000 row to be reachable in the default window')
+    let uncuratedRow = await scrollSymbolIntoWindow(result, 'ZZZ000')
     let pinButton = uncuratedRow?.querySelector('[data-testid="pin-button"]') as HTMLElement
     await result.act(() => pinButton.click())
 

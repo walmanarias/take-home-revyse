@@ -1,171 +1,83 @@
 // The single client-hydrated composition root for the crypto rates
 // dashboard (ADR 0005). `RatesDashboard` owns every piece of feature state
 // as setup-scope variables and wires the pure modules (budget/lease/cache/
-// order/sort/format/persisted) together. `RatesDashboardEntry` is the thin,
-// fully-serializable `clientEntry` wrapper actually mounted by `home-page.tsx`;
-// `RatesDashboard` itself stays a plain (non-entry) component so its
-// `kv`/`clock`/`fetchImpl` test seams (functions, not serializable) can be
-// passed directly by `remix/ui/test`'s `render(...)` without ever crossing
-// the `clientEntry` prop-serialization boundary.
+// order/sort/format/persisted/status/window) to the presentational render
+// helpers (toolbar/card/table/budget-strip). It holds state and decides;
+// it renders almost no markup itself.
+//
+// `RatesDashboardEntry` is the thin, fully-serializable `clientEntry`
+// wrapper actually mounted by `home-page.tsx`; `RatesDashboard` itself stays
+// a plain (non-entry) component so its `kv`/`clock`/`fetchImpl` test seams
+// (functions, not serializable) can be passed directly by `remix/ui/test`'s
+// `render(...)` without ever crossing the prop-serialization boundary.
 
-import {
-  addEventListeners,
-  clientEntry,
-  on,
-  type ElementProps,
-  type Handle,
-  type MixinDescriptor,
-} from 'remix/ui'
+import { addEventListeners, clientEntry, type Handle } from 'remix/ui'
 
-import { BUDGET_CAP, BUDGET_WINDOW_MS, createBudgetStore } from './budget.ts'
-import {
-  CACHE_KEY,
-  isRatesCache,
-  type RatesCache,
-  type Staleness,
-  readCache,
-  staleness,
-  writeCache,
-} from './cache.ts'
-import { type FetchedRates, fetchRates } from './coinbase.ts'
-import { SYMBOLS, displayNameFor } from './currencies.ts'
-import { appendHistory, computeDelta } from './history.ts'
+import { BUDGET_CAP, createBudgetStore } from './budget.ts'
+import { CACHE_KEY, parseCachePayload, staleness, writeCache, type Staleness } from './cache.ts'
+import { renderAssetCard, type CardHandlers, type MoveDirection } from './card.tsx'
+import { fetchRates, type FetchedRates } from './coinbase.ts'
+import { displayNameFor } from './currencies.ts'
+import { appendHistory } from './history.ts'
 import { createLeaseStore } from './lease.ts'
+import { createLocksPort, type LocksPort } from './locks.ts'
 import { reorder } from './order.ts'
 import {
   ORDER_V2_KEY,
   adoptOrderRecord,
-  isOrderRecord,
+  parseOrderRecordPayload,
   readOrderRecord,
   writeOrder,
-  type LocksPort,
   type OrderRecord,
 } from './order-store.ts'
-import { formatBtc, formatDelta, formatUsd } from './format.ts'
-import { type KVStore, readJSON, writeJSON } from './persisted.ts'
+import { type KVStore, writeJSON } from './persisted.ts'
+import { renderBudgetStrip } from './budget-strip.tsx'
+import type { RatesMap } from './rate.ts'
 import { buildSearchIndex, matchesQuery } from './search-index.ts'
-import { type SortMode, sortSymbols } from './sort.ts'
-import { computeWindow, type WindowRange } from './window.ts'
 import {
-  autoLabelCss,
-  badgeCss,
+  CURATED_SYMBOLS,
+  FAVS_KEY,
+  SCOPE_KEY,
+  VIEW_KEY,
+  coldSnapshot,
+  readPersistedSnapshot,
+  validSymbolsForOrder,
+  type Scope,
+  type ViewMode,
+} from './snapshot.ts'
+import { sortSymbols, type SortMode } from './sort.ts'
+import {
+  POLL_MS,
+  computeAutoLabel,
+  computeBanner,
+  computeBudgetView,
+  computeStatus,
+  formatAge,
+} from './status.ts'
+import {
+  DEFAULT_VIEWPORT_HEIGHT_PX,
+  computeTableWindow,
+  createAutoScroller,
+  renderPlainTable,
+  renderWindowedTable,
+  sameWindow,
+} from './table.tsx'
+import {
   bannerCss,
-  btcValueCss,
-  btnCss,
-  budgetCaptionCss,
-  budgetLabelCss,
-  budgetStripCss,
-  cardCss,
-  cardHeaderCss,
   captionCss,
-  dragHandleCss,
   emptyStateCss,
-  filterWrapCss,
-  focusRingCss,
-  footerRowCss,
   footnoteCss,
   gridCss,
   h4Css,
   headerCss,
-  inputCss,
   ledeCss,
-  matchCounterCss,
-  nameCss,
   noticeCss,
-  pinButtonCss,
-  pipCss,
-  pipsCss,
-  priceRowCss,
-  roleLabelCss,
   rootCss,
-  segButtonCss,
-  segCss,
-  statusCss,
-  statusDotCss,
-  symbolCss,
-  tableAssetCellCss,
-  tableHeaderCss,
-  tableInnerCss,
-  tableRowCss,
-  tableTrendCellCss,
-  tableViewportCss,
-  tableWrapCss,
   titleRowCss,
-  titlesCss,
-  toolbarCss,
-  usdCaptionCss,
-  usdValueCss,
   visuallyHiddenCss,
 } from './styles.ts'
-
-const ALL_SYMBOLS: string[] = [...SYMBOLS]
-
-const FAVS_KEY = 'nocturne.rates.favs.v1'
-const VIEW_KEY = 'nocturne.rates.view.v1'
-const SCOPE_KEY = 'nocturne.rates.scope.v1'
-
-type ViewMode = 'cards' | 'table'
-type Scope = 'curated' | 'all'
-
-// Every piece of localStorage-derived state that can change what the very
-// first render shows (AC-100) — bundled so a hydrating mount's cold first
-// render and its post-mount adoption of the real persisted values both go
-// through the exact same shape, applied together in one `handle.update()`.
-interface PersistedSnapshot {
-  cache: RatesCache | null
-  favs: string[]
-  order: string[]
-  orderUpdatedAt: number
-  view: ViewMode
-  scope: Scope
-}
-
-// Windowing (ADR 0006, T2): rows are a fixed height so `computeWindow` never
-// measures the DOM. `DEFAULT_VIEWPORT_HEIGHT_PX` matches `tableViewportCss`'s
-// own default height and seeds the very first render, before any real
-// `scroll` event has reported the viewport's actual `clientHeight`.
-const ROW_HEIGHT_PX = 40
-const OVERSCAN = 5
-const DEFAULT_VIEWPORT_HEIGHT_PX = 480
-const AUTO_SCROLL_EDGE_PX = 32
-const AUTO_SCROLL_STEP_PX = 18
-
-// The leaf pieces `renderCard` builds once per asset — shared, unmodified,
-// between whichever container branch (table row / card tile) assembles them,
-// so event wiring/data-testid/aria stay a single source of truth regardless
-// of `currentView`. `dragHandle` is `null` for an untracked "All"-scope row
-// (AC-90) — every other leaf always renders.
-interface CardLeaves {
-  badge: JSX.Element
-  titles: JSX.Element
-  pinButton: JSX.Element
-  dragHandle: JSX.Element | null
-  usdValue: JSX.Element
-  btcValue: JSX.Element
-  deltaValue: JSX.Element
-  sparkline: JSX.Element
-}
-
-interface CardAssembly extends CardLeaves {
-  symbol: string
-  name: string
-  hidden: boolean
-  dim: boolean
-  historyLength: number
-  containerStyle: {
-    opacity: number | undefined
-    background: string | undefined
-    boxShadow: string | undefined
-  }
-  dragMixins: ReadonlyArray<MixinDescriptor<HTMLElement, any, ElementProps>>
-}
-
-const POLL_MS = 8000
-const POLL_SECONDS = 8
-
-const NO_CACHE_BANNER =
-  "No cached rates on this device yet, and the feed isn't answering. Values stay blank rather " +
-  `than guessing — retrying every ${POLL_SECONDS}s.`
+import { renderToolbar, type ToolbarHandlers } from './toolbar.tsx'
+import type { WindowRange } from './window.ts'
 
 export interface RatesDashboardProps {
   kv?: KVStore
@@ -200,23 +112,22 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let tabId = randomTabId()
   let budgetStore = createBudgetStore(kv, clock)
   let leaseStore = createLeaseStore(kv, clock)
+  let autoScroller = createAutoScroller()
 
   // AC-100: a real hydration's very first render must match the server's
-  // cold-start markup byte-for-byte (SSR never has localStorage, so it's
-  // always the same fixed defaults) — reading real persisted state
-  // synchronously here would otherwise hand hydration different rendered
-  // TEXT (a warm cache's price/history, a spent budget's pip count, a
-  // reordered/pinned symbol list, "all"/"table" scope/view) and trigger a
-  // framework hydration-mismatch. While hydrating, every persisted read is
-  // deferred to `readPersistedSnapshot()`'s call inside `start()` (a real
-  // post-mount task), applied together in one `handle.update()`. A direct
-  // test mount (`hydrating` unset) reads them synchronously here instead, as
-  // every other test already depends on (AC-25..29, AC-77..96, ...).
+  // cold-start markup (SSR never has localStorage, so it's always the same
+  // fixed defaults) — reading real persisted state synchronously here would
+  // hand hydration different rendered TEXT (a warm cache's prices, a spent
+  // budget's pip count, a reordered/pinned list, "all"/"table" scope/view)
+  // and trigger a framework hydration-mismatch. While hydrating, every
+  // persisted read is deferred to `start()`, applied together in one
+  // `handle.update()`. A direct test mount reads them synchronously here
+  // instead, as every other test already depends on (AC-25..29, AC-77..96).
   let persistedAdopted = !hydrating
-  let snapshot = persistedAdopted ? readPersistedSnapshot() : coldSnapshot()
+  let snapshot = persistedAdopted ? readPersistedSnapshot(kv, clock) : coldSnapshot(clock)
 
   let cache = snapshot.cache
-  let rates: Record<string, { usd: number; btc: number }> | null = cache?.rates ?? null
+  let rates: RatesMap | null = cache?.rates ?? null
   let fetchedAt: number | null = cache?.fetchedAt ?? null
   let history: Record<string, number[]> = cache?.history ?? {}
   let favs = snapshot.favs
@@ -239,12 +150,15 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let started = false
 
   // Windowing (ADR 0006, T2) — only meaningful in "All" scope's forced table
-  // view; seeded with a default viewport height and refreshed by the real
-  // `scroll` handler once the viewport is mounted and measurable.
+  // view. `viewportHeightPx` starts at the SSR-safe default and is replaced
+  // by the viewport's real measured height on its first post-mount frame.
   let scrollTop = 0
   let viewportHeightPx = DEFAULT_VIEWPORT_HEIGHT_PX
-  let autoScrollDirection: -1 | 0 | 1 = 0
-  let autoScrollFrame: number | null = null
+  // The window and item count the last render committed to, so a scroll or
+  // resize can tell whether the rendered slice would actually move before
+  // paying for an update.
+  let renderedRange: WindowRange | null = null
+  let renderedItemCount = 0
 
   // Search index (ADR 0006, T2) — rebuilt only when the active symbol
   // universe actually changes (scope toggle, or a fetch introducing symbols
@@ -268,10 +182,9 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // AC-100: now that the first (cold-matching) render has committed, adopt
     // whatever was actually persisted — cache/rates/history, budget, favs,
     // order, view, and scope together in one update. A no-op unless
-    // `hydrating` forced the cold start above (`persistedAdopted` is already
-    // `true` for a direct test mount).
+    // `hydrating` forced the cold start above.
     if (!persistedAdopted) {
-      let persisted = readPersistedSnapshot()
+      let persisted = readPersistedSnapshot(kv, clock)
       cache = persisted.cache
       rates = cache?.rates ?? null
       fetchedAt = cache?.fetchedAt ?? null
@@ -293,21 +206,13 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // reach any listener. `pointerup` always fires at the release point
     // regardless of what happened to the drag source, so it's the one
     // cleanup path guaranteed to run — a no-op whenever no drag is active.
-    addEventListeners(document, handle.signal, {
-      pointerup: () => {
-        if (!dragSym) return
-        dragSym = null
-        overSym = null
-        stopAutoScroll()
-        handle.update()
-      },
-    })
+    addEventListeners(document, handle.signal, { pointerup: () => cancelDrag() })
 
     // Defer the very first leadership/poll check to a real macrotask (not a
     // microtask) so a synchronous UI interaction immediately after mount
     // (e.g. unchecking "Auto") always wins the race against this initial
-    // check, and so a test that only ever awaits microtask-level work (no
-    // real timer wait) never observes this initial check firing at all.
+    // check, and so a test that only ever awaits microtask-level work never
+    // observes this initial check firing at all.
     let initialCheck = setTimeout(tick, 0)
     let interval = setInterval(tick, 1000)
 
@@ -315,7 +220,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       clearTimeout(initialCheck)
       clearInterval(interval)
       leaseStore.release(tabId)
-      stopAutoScroll()
+      autoScroller.stop()
     })
   }
 
@@ -325,12 +230,10 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       let incoming = parseOrderRecordPayload(event.newValue)
       if (!incoming) return
       let local: OrderRecord = { schemaVersion: 2, updatedAt: orderUpdatedAt, order }
-      let adopted = adoptOrderRecord(local, incoming)
-      if (adopted === incoming) {
-        order = incoming.order
-        orderUpdatedAt = incoming.updatedAt
-        handle.update()
-      }
+      if (adoptOrderRecord(local, incoming) !== incoming) return
+      order = incoming.order
+      orderUpdatedAt = incoming.updatedAt
+      handle.update()
       return
     }
 
@@ -362,9 +265,9 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
 
     try {
       let result = await fetchImpl()
-      // The component may have been disposed while this fetch was in
-      // flight (e.g. a real-browser navigation away mid-request) — skip
-      // committing state and re-rendering a component that's already gone.
+      // The component may have been disposed while this fetch was in flight
+      // (e.g. a real-browser navigation away mid-request) — skip committing
+      // state and re-rendering a component that's already gone.
       if (handle.signal.aborted) return
       now = clock()
       fetchedAt = result.fetchedAt
@@ -372,7 +275,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       // Bounded history/storage (ADR 0006): only the curated 15 plus current
       // pins accumulate session samples, regardless of how many symbols
       // Coinbase's response carries.
-      history = appendHistory(history, result.rates, Array.from(computeTrackedSet()))
+      history = appendHistory(history, result.rates, trackedSymbols())
       failures = 0
       writeCache(kv, { rates, fetchedAt, history })
     } catch {
@@ -390,9 +293,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // Pinning an uncurated symbol joins the reorderable/history-tracked set
     // (ADR 0006): it needs a slot in `order` to become draggable. Curated
     // symbols are always already present, so this never fires for them.
-    if (!wasPinned && !order.includes(symbol)) {
-      persistOrder([...order, symbol])
-    }
+    if (!wasPinned && !order.includes(symbol)) persistOrder([...order, symbol])
     handle.update()
   }
 
@@ -408,8 +309,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
 
   function setScope(mode: Scope) {
     if (scope === mode) return
-    // Only the scope key is written here — filter/sort/pins/order/view are
-    // untouched, matching setView's own persistence discipline.
+    // Only the scope key is written here, matching setView's discipline.
     scope = mode
     writeJSON(kv, SCOPE_KEY, scope)
     handle.update()
@@ -425,136 +325,22 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // `updatedAt` for this tab's own writes keeps every local reorder from
     // ever losing to its own prior write.
     orderUpdatedAt = Math.max(clock(), orderUpdatedAt + 1)
-    void writeOrder(
-      kv,
-      { schemaVersion: 2, updatedAt: orderUpdatedAt, order: nextOrder },
-      locksPort,
-    ).then((committed) => {
-      // A rejected write means a fresher record was already durable in
-      // storage by the time this one landed (AC-98) — keeping the local
-      // optimistic order in that case would silently diverge from what's
-      // actually persisted. Resync to the record that won instead.
-      if (!committed) resyncOrderFromStorage()
-    })
+    void writeOrder(kv, { schemaVersion: 2, updatedAt: orderUpdatedAt, order: nextOrder }, locksPort).then(
+      (committed) => {
+        // A rejected write means a fresher record was already durable in
+        // storage by the time this one landed (AC-98) — keeping the local
+        // optimistic order would silently diverge from what's persisted.
+        // Resync to the record that won instead.
+        if (!committed) resyncOrderFromStorage()
+      },
+    )
   }
 
   function resyncOrderFromStorage() {
-    let stored = readOrderRecord(kv, computeValidSymbolsForOrder(favs), clock)
+    let stored = readOrderRecord(kv, validSymbolsForOrder(favs), clock)
     order = stored.order
     orderUpdatedAt = stored.updatedAt
     handle.update()
-  }
-
-  function computeValidSymbolsForOrder(favsList: string[]): string[] {
-    return Array.from(new Set([...ALL_SYMBOLS, ...favsList]))
-  }
-
-  // AC-100: every synchronous persisted read in one place, so both the
-  // (non-hydrating) setup-time read and the (hydrating) post-mount adoption
-  // in `start()` go through the identical logic — the same "last-known-good
-  // cache's fetched universe validates a pinned uncurated symbol" rule
-  // documented below applies either way.
-  function readPersistedSnapshot(): PersistedSnapshot {
-    let cache = readCache(kv)
-    // A previously-pinned uncurated symbol (ADR 0006) is only "valid" to
-    // keep across a reload if we have some evidence it's a real symbol — the
-    // last-known-good cache's own fetched universe is the best guess
-    // available without a fetch having run this session yet.
-    let knownUniverse = cache ? Object.keys(cache.rates) : []
-    let favs = readJSON<string[]>(kv, FAVS_KEY, [], isStringArray).filter(
-      (symbol) => ALL_SYMBOLS.includes(symbol) || knownUniverse.includes(symbol),
-    )
-    let orderRecord = readOrderRecord(kv, computeValidSymbolsForOrder(favs), clock)
-    let view = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
-    let scope = readJSON<Scope>(kv, SCOPE_KEY, 'curated', isScope)
-    return {
-      cache,
-      favs,
-      order: orderRecord.order,
-      orderUpdatedAt: orderRecord.updatedAt,
-      view,
-      scope,
-    }
-  }
-
-  // The fixed shape SSR always renders (no localStorage there, ever) —
-  // exactly what `readPersistedSnapshot()` itself would compute against an
-  // empty/no-op `kv`, kept as an explicit constant-shaped default rather
-  // than re-deriving it through a real (if inert) kv round-trip.
-  function coldSnapshot(): PersistedSnapshot {
-    return {
-      cache: null,
-      favs: [],
-      order: [...ALL_SYMBOLS],
-      orderUpdatedAt: clock(),
-      view: 'cards',
-      scope: 'curated',
-    }
-  }
-
-  function computeTrackedSet(): Set<string> {
-    return new Set([...ALL_SYMBOLS, ...favs])
-  }
-
-  function computeUniverse(): string[] {
-    if (scope !== 'all') return ALL_SYMBOLS
-    let fetched = rates ? Object.keys(rates) : []
-    return Array.from(new Set([...ALL_SYMBOLS, ...fetched]))
-  }
-
-  function computeSortedSymbols(universe: string[]): string[] {
-    let deltas: Record<string, number> = {}
-    for (let symbol of universe) {
-      let delta = computeDelta(history[symbol] ?? [])
-      if (delta !== null) deltas[symbol] = delta
-    }
-    // "My order" in All scope (ADR 0006): the reorderable set (`order`,
-    // already curated-plus-pinned in master order) first, then every other
-    // universe symbol alphabetically. sortSymbols' own pin-to-top partition
-    // then yields: pinned (master order) → remaining curated (master order)
-    // → uncurated (alphabetical) — for every sort mode, not just "custom".
-    //
-    // `order` can carry a symbol pinned while in All scope that isn't one of
-    // the 15 curated symbols (it joins `order` so it's reorderable there,
-    // per togglePin). Curated scope must never render it (AC-101) — the
-    // curated branch intersects `order` with `ALL_SYMBOLS` rather than using
-    // it verbatim.
-    let symbolsForSort =
-      scope === 'all'
-        ? [...order, ...universe.filter((symbol) => !order.includes(symbol)).sort((a, b) => a.localeCompare(b))]
-        : order.filter((symbol) => ALL_SYMBOLS.includes(symbol))
-    return sortSymbols(sort, symbolsForSort, favs, rates, deltas)
-  }
-
-  function getSearchIndex(universe: string[]): Map<string, string> {
-    let key = universe.join(',')
-    if (searchIndexCache && searchIndexCache.key === key) return searchIndexCache.index
-    let index = buildSearchIndex(universe, displayNameFor)
-    searchIndexCache = { key, index }
-    return index
-  }
-
-  function stopAutoScroll() {
-    autoScrollDirection = 0
-    if (autoScrollFrame !== null) {
-      cancelAnimationFrame(autoScrollFrame)
-      autoScrollFrame = null
-    }
-  }
-
-  // Drag edge auto-scroll (ADR 0006): dragging near the windowed viewport's
-  // top/bottom edge nudges `scrollTop` every animation frame, so a user can
-  // drag toward a target currently outside the rendered slice. Visual-QA'd,
-  // not covered by component assertions (scope-semantics preamble).
-  function startAutoScroll(node: HTMLElement, direction: -1 | 1) {
-    if (autoScrollDirection === direction) return
-    stopAutoScroll()
-    autoScrollDirection = direction
-    let step = () => {
-      node.scrollTop += direction * AUTO_SCROLL_STEP_PX
-      autoScrollFrame = requestAnimationFrame(step)
-    }
-    autoScrollFrame = requestAnimationFrame(step)
   }
 
   function applyReorder(dragged: string, target: string, position: 'before' | 'after') {
@@ -564,366 +350,139 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     handle.update()
   }
 
-  function applyDrop(dragged: string, target: string) {
-    let fromIndex = order.indexOf(dragged)
-    let toIndex = order.indexOf(target)
-    let position: 'before' | 'after' = fromIndex < toIndex ? 'after' : 'before'
-    applyReorder(dragged, target, position)
+  function cancelDrag() {
+    autoScroller.stop()
+    if (!dragSym) return
+    dragSym = null
+    overSym = null
+    handle.update()
   }
 
-  function computeAutoLabel(): string {
-    if (!auto) return 'off'
-    if (pending) return 'now'
-    let elapsed = now - (lastAttempt ?? now)
-    let remaining = Math.max(0, Math.ceil((POLL_MS - elapsed) / 1000))
-    return `${remaining}s`
+  let cardHandlers: CardHandlers = {
+    onTogglePin: togglePin,
+    onDragStart(symbol) {
+      dragSym = symbol
+      handle.update()
+    },
+    onDragEnd: cancelDrag,
+    onDragOverRow(symbol) {
+      if (!dragSym || overSym === symbol) return
+      overSym = symbol
+      handle.update()
+    },
+    onDragLeaveRow(symbol) {
+      if (overSym !== symbol) return
+      overSym = null
+      handle.update()
+    },
+    onDropRow(target) {
+      let dragged = dragSym
+      if (!dragged) return
+      dragSym = null
+      overSym = null
+      autoScroller.stop()
+      if (dragged === target) {
+        handle.update()
+        return
+      }
+      // Drop semantics (T5): re-insert adjacent to the target — after it
+      // when moving down the master order, before it when moving up.
+      let position: 'before' | 'after' = order.indexOf(dragged) < order.indexOf(target) ? 'after' : 'before'
+      applyReorder(dragged, target, position)
+    },
+    onKeyboardMove(symbol: string, direction: MoveDirection) {
+      let index = order.indexOf(symbol)
+      if (index === -1) return
+      if (direction === 'up') {
+        if (index <= 0) return
+        applyReorder(symbol, order[index - 1]!, 'before')
+      } else {
+        if (index >= order.length - 1) return
+        applyReorder(symbol, order[index + 1]!, 'after')
+      }
+    },
   }
 
-  // Shared segmented-control button shape used by the sort, view, and scope
-  // toggles: `sortButton`/`viewButton`/`scopeButton` stay thin, domain-named
-  // adapters over this one markup/event-wiring definition.
-  function segButton(
-    testId: string,
-    label: string,
-    pressed: boolean,
-    onClick: () => void,
-    disabled = false,
-  ) {
-    return (
-      <button
-        key={testId}
-        type="button"
-        data-testid={testId}
-        class="focus-ring"
-        aria-pressed={pressed}
-        disabled={disabled}
-        mix={[focusRingCss, segButtonCss, on('click', onClick)]}
-      >
-        {label}
-      </button>
-    )
+  /** Curated ∪ pinned: the symbols that get a drag handle and session history. */
+  function trackedSymbols(): string[] {
+    return validSymbolsForOrder(favs)
   }
 
-  function sortButton(mode: SortMode, label: string) {
-    return segButton(`sort-${mode}`, label, sort === mode, () => {
+  function symbolUniverse(): string[] {
+    if (scope !== 'all') return [...CURATED_SYMBOLS]
+    let fetched = rates ? Object.keys(rates) : []
+    return Array.from(new Set([...CURATED_SYMBOLS, ...fetched]))
+  }
+
+  function sortedSymbolsFor(universe: string[]): string[] {
+    let deltas: Record<string, number> = {}
+    for (let symbol of universe) {
+      let samples = history[symbol] ?? []
+      if (samples.length >= 2 && samples[0]) {
+        deltas[symbol] = ((samples[samples.length - 1]! - samples[0]!) / samples[0]!) * 100
+      }
+    }
+    // "My order" in All scope (ADR 0006): the reorderable set (`order`,
+    // already curated-plus-pinned in master order) first, then every other
+    // universe symbol alphabetically. sortSymbols' own pin-to-top partition
+    // then yields: pinned (master order) → remaining curated (master order)
+    // → uncurated (alphabetical) — for every sort mode, not just "custom".
+    //
+    // `order` can carry a symbol pinned while in All scope that isn't one of
+    // the 15 curated symbols. Curated scope must never render it (AC-101) —
+    // the curated branch intersects `order` with the curated list rather
+    // than using it verbatim.
+    let symbolsForSort =
+      scope === 'all'
+        ? [...order, ...universe.filter((s) => !order.includes(s)).sort((a, b) => a.localeCompare(b))]
+        : order.filter((symbol) => CURATED_SYMBOLS.includes(symbol))
+    return sortSymbols(sort, symbolsForSort, favs, rates, deltas)
+  }
+
+  function searchIndexFor(universe: string[]): Map<string, string> {
+    let key = universe.join(',')
+    if (searchIndexCache?.key === key) return searchIndexCache.index
+    let index = buildSearchIndex(universe, displayNameFor)
+    searchIndexCache = { key, index }
+    return index
+  }
+
+  let toolbarHandlers: ToolbarHandlers = {
+    onFilterChange(value) {
+      filter = value
+      handle.update()
+    },
+    onSortChange(mode) {
       sort = mode
       handle.update()
-    })
+    },
+    onScopeChange: setScope,
+    onViewChange: setView,
+    onRefresh() {
+      void refresh()
+    },
+    onAutoChange(enabled) {
+      auto = enabled
+      handle.update()
+    },
   }
 
-  function viewButton(mode: ViewMode, label: string) {
-    // "All" scope forces (and locks) table view — cards can't window a
-    // reflowing grid (ADR 0006). The Cards option disables while locked;
-    // Table stays clickable (already the effective view, a harmless no-op).
-    let effective: ViewMode = scope === 'all' ? 'table' : view
-    let disabled = mode === 'cards' && scope === 'all'
-    return segButton(`view-toggle-${mode}`, label, effective === mode, () => setView(mode), disabled)
+  /** Re-render only when the rendered slice would actually move. */
+  function updateIfWindowMoved() {
+    let next = computeTableWindow(scrollTop, viewportHeightPx, renderedItemCount)
+    if (!sameWindow(next, renderedRange)) handle.update()
   }
 
-  function scopeButton(mode: Scope, label: string) {
-    return segButton(`scope-toggle-${mode}`, label, scope === mode, () => setScope(mode))
+  function onViewportScroll(nextScrollTop: number, nextHeight: number) {
+    scrollTop = nextScrollTop
+    viewportHeightPx = nextHeight
+    updateIfWindowMoved()
   }
 
-  // Shared between curated-scope table view (unwindowed) and All-scope table
-  // view (windowed) — one header markup definition either way.
-  function renderTableHeader() {
-    return (
-      <div data-testid="table-header" mix={tableHeaderCss}>
-        <span aria-hidden="true" />
-        <span>Asset</span>
-        <span>USD</span>
-        <span>BTC</span>
-        <span>Session Δ</span>
-        <span>Trend</span>
-        <span aria-hidden="true" />
-      </div>
-    )
-  }
-
-  // All-scope's windowed table body (ADR 0006, T2): the scroll viewport plus
-  // its top/bottom spacers and rendered slice. Extracted from the render
-  // closure since it's sizeable and carries its own event wiring (scroll +
-  // drag-edge auto-scroll + the AC-102 cleanup safety net), matching the
-  // file's existing pattern of thin, render-pass-value-parameterized helpers
-  // (`renderTableHeader`, `renderCard`) that still close over setup-scope
-  // state (`dragSym`, `sort`, `scrollTop`, ...).
-  function renderWindowedTable(
-    windowRange: WindowRange,
-    windowedSymbols: string[],
-    visibleCount: number,
-    dim: boolean,
-    effectiveView: ViewMode,
-    trackedSet: Set<string>,
-  ) {
-    return (
-      <div
-        data-testid="table-viewport"
-        mix={[
-          tableViewportCss,
-          on<HTMLElement, 'scroll'>('scroll', (event) => {
-            let node = event.currentTarget
-            let nextScrollTop = node.scrollTop
-            let nextHeight = node.clientHeight || viewportHeightPx
-            let nextRange = computeWindow({
-              scrollTop: nextScrollTop,
-              viewportHeight: nextHeight,
-              rowHeight: ROW_HEIGHT_PX,
-              overscan: OVERSCAN,
-              itemCount: visibleCount,
-            })
-            scrollTop = nextScrollTop
-            viewportHeightPx = nextHeight
-            if (
-              nextRange.startIndex !== windowRange.startIndex ||
-              nextRange.endIndex !== windowRange.endIndex
-            ) {
-              handle.update()
-            }
-          }),
-          on<HTMLElement, 'dragover'>('dragover', (event) => {
-            if (sort !== 'custom' || !dragSym) return
-            let rect = event.currentTarget.getBoundingClientRect()
-            let y = event.clientY
-            if (y - rect.top < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, -1)
-            else if (rect.bottom - y < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, 1)
-            else stopAutoScroll()
-          }),
-          // AC-102: the viewport is always mounted for the lifetime of the
-          // windowed table, unlike any individual row — auto-scroll can move
-          // the dragged row's own node out of the rendered window, so
-          // `dragend`/an out-of-bounds `dragleave`/`drop` reaching the
-          // dragged row's own (possibly already-unmounted) handle is not a
-          // reliable cleanup path on its own. These mirror that cleanup on
-          // an ancestor that never unmounts.
-          on<HTMLElement, 'dragend'>('dragend', () => {
-            stopAutoScroll()
-            if (!dragSym) return
-            dragSym = null
-            overSym = null
-            handle.update()
-          }),
-          on<HTMLElement, 'dragleave'>('dragleave', (event) => {
-            stopAutoScroll()
-            let related = event.relatedTarget as Node | null
-            if (related && event.currentTarget.contains(related)) return
-            if (!dragSym) return
-            dragSym = null
-            overSym = null
-            handle.update()
-          }),
-          on<HTMLElement, 'drop'>('drop', () => {
-            stopAutoScroll()
-            if (!dragSym) return
-            dragSym = null
-            overSym = null
-            handle.update()
-          }),
-        ]}
-      >
-        <div mix={tableInnerCss}>
-          {renderTableHeader()}
-          <div
-            data-testid="window-spacer-top"
-            data-row-count={String(windowRange.startIndex)}
-            style={{ height: `${windowRange.topSpacerPx}px` }}
-          />
-          {windowedSymbols.map((symbol) =>
-            renderCard(symbol, dim, '', effectiveView, trackedSet.has(symbol)),
-          )}
-          <div
-            data-testid="window-spacer-bottom"
-            data-row-count={String(visibleCount - windowRange.endIndex)}
-            style={{ height: `${windowRange.bottomSpacerPx}px` }}
-          />
-        </div>
-      </div>
-    )
-  }
-
-  function renderCard(
-    symbol: string,
-    dim: boolean,
-    query: string,
-    currentView: ViewMode,
-    showHandle: boolean,
-  ) {
-    let name = displayNameFor(symbol)
-    let rate = rates?.[symbol]
-    let hidden =
-      query.length > 0 &&
-      !(symbol.toLowerCase().includes(query) || name.toLowerCase().includes(query))
-    let historyForSymbol = history[symbol] ?? []
-    let delta = computeDelta(historyForSymbol)
-    let pinned = favs.includes(symbol)
-    let usdText = rate ? formatUsd(rate.usd) : '—'
-    let btcText = symbol === 'BTC' ? '—' : rate ? formatBtc(rate.btc) : '—'
-    let deltaText = delta === null ? '—' : formatDelta(delta)
-    let deltaSign: 'positive' | 'negative' | 'neutral' =
-      delta === null || delta === 0 ? 'neutral' : delta > 0 ? 'positive' : 'negative'
-    let deltaColor =
-      deltaSign === 'positive'
-        ? 'var(--color-accent-400)'
-        : deltaSign === 'negative'
-          ? 'var(--color-negative)'
-          : 'var(--color-neutral-700)'
-    let draggable = sort === 'custom'
-    let isDragged = dragSym === symbol
-    let isDropTarget = overSym === symbol && !!dragSym && dragSym !== symbol
-
-    // One row/card per asset, shared across both views: the same leaf
-    // pieces (badge/titles/pin/handle/values/sparkline) with the identical
-    // data-testid/aria/event contract either way — only their grouping and
-    // the container's layout css differ, driven by `currentView`.
-    let badge = (
-      <span mix={badgeCss}>{symbol.slice(0, 3)}</span>
-    )
-    let titles = (
-      <span mix={titlesCss}>
-        <span mix={nameCss}>{name}</span>
-        <span mix={symbolCss}>{symbol}</span>
-      </span>
-    )
-    let pinButton = (
-      <button
-        type="button"
-        data-testid="pin-button"
-        class="focus-ring"
-        data-pinned={pinned ? 'true' : 'false'}
-        aria-label={`${pinned ? 'Unpin' : 'Pin'} ${name}`}
-        mix={[focusRingCss, pinButtonCss(pinned), on('click', () => togglePin(symbol))]}
-      >
-        ★
-      </button>
-    )
-    // Drag/keyboard handles exist only on curated or pinned rows (AC-90) —
-    // an untracked "All"-scope row renders no handle at all, not merely a
-    // non-draggable one.
-    let dragHandle = !showHandle ? null : (
-      <span
-        data-testid="drag-handle"
-        class="focus-ring"
-        role="button"
-        tabIndex={0}
-        aria-label={`Reorder ${name} (${symbol})`}
-        draggable={draggable}
-        mix={[
-          focusRingCss,
-          dragHandleCss(draggable),
-          on('dragstart', () => {
-            if (sort !== 'custom') return
-            dragSym = symbol
-            handle.update()
-          }),
-          on('dragend', () => {
-            dragSym = null
-            overSym = null
-            stopAutoScroll()
-            handle.update()
-          }),
-          on('keydown', (event) => {
-            if (sort !== 'custom') return
-            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-            event.preventDefault()
-            let index = order.indexOf(symbol)
-            if (event.key === 'ArrowUp') {
-              if (index <= 0) return
-              applyReorder(symbol, order[index - 1]!, 'before')
-            } else {
-              if (index === -1 || index >= order.length - 1) return
-              applyReorder(symbol, order[index + 1]!, 'after')
-            }
-          }),
-        ]}
-      >
-        ⠿
-      </span>
-    )
-    let usdValue = (
-      <span
-        data-testid="usd-value"
-        mix={usdValueCss}
-        style={{ color: dim ? 'var(--color-neutral-500)' : 'var(--color-text)' }}
-      >
-        {usdText}
-      </span>
-    )
-    let btcValue = (
-      <span data-testid="btc-value" mix={btcValueCss}>
-        {btcText}
-      </span>
-    )
-    let deltaValue = (
-      <span data-testid="delta-value" data-sign={deltaSign} style={{ color: deltaColor }}>
-        {deltaText}
-      </span>
-    )
-    let sparkline = renderSparkline(sparkPoints(historyForSymbol), deltaColor)
-
-    let containerStyle = {
-      // Handoff drag feedback: the dragged card/row drops to opacity .35;
-      // the hovered drop target fills with a translucent accent tint plus
-      // an inset accent edge.
-      opacity: isDragged ? 0.35 : undefined,
-      background: isDropTarget
-        ? 'color-mix(in srgb, var(--color-accent-500) 12%, var(--color-surface))'
-        : undefined,
-      boxShadow: isDropTarget ? 'inset 0 0 0 1px var(--color-accent-700)' : undefined,
-    }
-    let dragMixins = [
-      on<HTMLElement, 'dragenter'>('dragenter', (event) => {
-        if (sort !== 'custom' || !dragSym) return
-        event.preventDefault()
-        if (overSym !== symbol) {
-          overSym = symbol
-          handle.update()
-        }
-      }),
-      on<HTMLElement, 'dragover'>('dragover', (event) => {
-        if (sort !== 'custom' || !dragSym) return
-        event.preventDefault()
-        if (overSym !== symbol) {
-          overSym = symbol
-          handle.update()
-        }
-      }),
-      on<HTMLElement, 'dragleave'>('dragleave', (event) => {
-        if (overSym !== symbol) return
-        let related = event.relatedTarget as Node | null
-        if (related && event.currentTarget.contains(related)) return
-        overSym = null
-        handle.update()
-      }),
-      on<HTMLElement, 'drop'>('drop', (event) => {
-        if (sort !== 'custom' || !dragSym) return
-        event.preventDefault()
-        let dragged = dragSym
-        dragSym = null
-        overSym = null
-        stopAutoScroll()
-        if (dragged && dragged !== symbol) applyDrop(dragged, symbol)
-        else handle.update()
-      }),
-    ]
-
-    let assembly: CardAssembly = {
-      symbol,
-      name,
-      hidden,
-      dim,
-      historyLength: historyForSymbol.length,
-      containerStyle,
-      dragMixins,
-      badge,
-      titles,
-      pinButton,
-      dragHandle,
-      usdValue,
-      btcValue,
-      deltaValue,
-      sparkline,
-    }
-
-    return currentView === 'table' ? renderTableRow(assembly) : renderCardTile(assembly)
+  function onViewportMeasure(nextHeight: number) {
+    if (nextHeight === viewportHeightPx) return
+    viewportHeightPx = nextHeight
+    updateIfWindowMoved()
   }
 
   return () => {
@@ -933,61 +492,56 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     }
 
     let effectiveView: ViewMode = scope === 'all' ? 'table' : view
-    let universe = computeUniverse()
-    let searchIdx = getSearchIndex(universe)
+    let universe = symbolUniverse()
+    let searchIndex = searchIndexFor(universe)
     let query = filter.trim().toLowerCase()
 
-    let sortedSymbols = computeSortedSymbols(universe)
-    let visibleSymbols = sortedSymbols.filter((symbol) => matchesQuery(searchIdx, symbol, query))
+    let sortedSymbols = sortedSymbolsFor(universe)
+    let visibleSymbols = sortedSymbols.filter((symbol) => matchesQuery(searchIndex, symbol, query))
     let visibleCount = visibleSymbols.length
     let hiddenCount = sortedSymbols.length - visibleCount
-
-    let trackedSet = computeTrackedSet()
+    let tracked = new Set(trackedSymbols())
 
     let tier: Staleness = staleness(fetchedAt, now)
     let dim = tier === 'expired'
     let ageMs = now - (fetchedAt ?? now)
-    let status = computeStatus(tier, ageMs, failures)
     // AC-100: budgetStore re-reads its own kv record on every call (unlike
-    // cache/order/favs/view/scope, which are captured once as setup-scope
-    // state) — the cold default matches exactly what SSR's own
-    // `budgetStore.read(now)` against an empty/no-op kv already computes
-    // (`refill` with no stored record yields a full, freshly-timestamped
-    // bucket), so it's gated here rather than folded into the snapshot.
+    // cache/order/favs/view/scope, captured once as setup-scope state) — the
+    // cold default matches exactly what SSR's own `budgetStore.read(now)`
+    // against an empty kv computes, so it's gated here rather than folded
+    // into the snapshot.
     let budgetState = persistedAdopted ? budgetStore.read(now) : { tokens: BUDGET_CAP, ts: now }
-    let budgetView = computeBudgetView(budgetState.tokens)
+    let budget = computeBudgetView(budgetState.tokens)
     let bannerText = computeBanner(tier, rates !== null, failures, formatAge(ageMs))
-    let autoLabel = computeAutoLabel()
 
-    // Windowing only applies to All scope's forced table view (ADR 0006) —
-    // curated-scope table view still renders its full (small) list.
-    //
-    // `scrollTop` only changes on a real `scroll` event, but `visibleCount`
-    // can shrink for reasons that never fire one (typing a filter, switching
-    // scope) — recomputing against a now-stale, too-deep `scrollTop` would
-    // hand computeWindow a start clamped past the new (smaller) item count,
-    // producing a false-empty window (AC-97). Clamping it against the
-    // current item count's actual max scroll extent here, in the render
-    // pass, fixes that for every reason the count can change, not just a
-    // scroll event.
-    let windowRange =
-      scope === 'all'
-        ? computeWindow({
-            scrollTop: clampScrollTop(scrollTop, visibleCount, viewportHeightPx),
-            viewportHeight: viewportHeightPx,
-            rowHeight: ROW_HEIGHT_PX,
-            overscan: OVERSCAN,
-            itemCount: visibleCount,
-          })
-        : null
-    let windowedSymbols = windowRange ? visibleSymbols.slice(windowRange.startIndex, windowRange.endIndex) : []
+    let renderRow = (symbol: string) =>
+      renderAssetCard({
+        symbol,
+        rate: rates?.[symbol],
+        history: history[symbol] ?? [],
+        view: effectiveView,
+        pinned: favs.includes(symbol),
+        hidden: !matchesQuery(searchIndex, symbol, query),
+        dim,
+        draggable: sort === 'custom',
+        showHandle: tracked.has(symbol),
+        isDragged: dragSym === symbol,
+        isOver: overSym === symbol,
+        handlers: cardHandlers,
+      })
+
+    // Windowing applies only to All scope's forced table view (ADR 0006);
+    // curated-scope table view renders its full (small) list.
+    let windowRange = scope === 'all' ? computeTableWindow(scrollTop, viewportHeightPx, visibleCount) : null
+    renderedRange = windowRange
+    renderedItemCount = visibleCount
 
     return (
       <div data-testid="rates-dashboard" data-view={effectiveView} mix={rootCss}>
         <header mix={headerCss}>
           <div mix={titleRowCss}>
             <h4 mix={h4Css}>Exchange Rates</h4>
-            <span mix={captionCss}>Coinbase · {ALL_SYMBOLS.length} assets</span>
+            <span mix={captionCss}>Coinbase · {CURATED_SYMBOLS.length} assets</span>
           </div>
           <p mix={ledeCss}>
             Live USD and BTC rates. Cards stay usable when the feed slows or fails — last-known-good
@@ -995,109 +549,24 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
           </p>
         </header>
 
-        <div mix={toolbarCss}>
-          <div mix={filterWrapCss}>
-            <input
-              type="text"
-              data-testid="filter-input"
-              class="focus-ring"
-              aria-label="Filter by name or symbol"
-              placeholder='Filter by name or symbol — try "eth"'
-              value={filter}
-              mix={[
-                focusRingCss,
-                inputCss,
-                on<HTMLInputElement>('input', (event) => {
-                  filter = event.currentTarget.value
-                  handle.update()
-                }),
-              ]}
-            />
-            {query && (
-              <span data-testid="match-counter" mix={matchCounterCss}>
-                {`${visibleCount}/${universe.length}`}
-              </span>
-            )}
-          </div>
+        {renderToolbar({
+          filter,
+          query,
+          visibleCount,
+          universeSize: universe.length,
+          sort,
+          scope,
+          effectiveView,
+          auto,
+          autoLabel: computeAutoLabel({ auto, pending, now, lastAttempt }),
+          pending,
+          budget,
+          tier,
+          status: computeStatus(tier, ageMs, failures),
+          handlers: toolbarHandlers,
+        })}
 
-          <div role="group" aria-label="Sort" mix={segCss}>
-            {sortButton('custom', 'My order')}
-            {sortButton('name', 'Name')}
-            {sortButton('usd', 'Price')}
-            {sortButton('delta', 'Change')}
-          </div>
-
-          <div role="group" aria-label="Scope" data-testid="scope-toggle" mix={segCss}>
-            {scopeButton('curated', 'Curated 15')}
-            {scopeButton('all', 'All')}
-          </div>
-
-          <div role="group" aria-label="View" data-testid="view-toggle" mix={segCss}>
-            {viewButton('cards', 'Cards')}
-            {viewButton('table', 'Table')}
-          </div>
-
-          <button
-            type="button"
-            data-testid="refresh-button"
-            class="focus-ring"
-            disabled={pending || budgetView.whole < 1}
-            title={
-              budgetView.whole < 1
-                ? `Budget spent — a request frees up in ${budgetView.nextTokenIn}s`
-                : 'Spend one request now'
-            }
-            mix={[focusRingCss, btnCss, on('click', () => void refresh())]}
-          >
-            {budgetView.whole < 1 ? `Wait ${budgetView.nextTokenIn}s` : 'Refresh'}
-          </button>
-
-          <label mix={autoLabelCss}>
-            <input
-              type="checkbox"
-              data-testid="auto-checkbox"
-              class="focus-ring"
-              checked={auto}
-              mix={[
-                focusRingCss,
-                on<HTMLInputElement>('change', (event) => {
-                  auto = event.currentTarget.checked
-                  handle.update()
-                }),
-              ]}
-            />
-            Auto · <span data-testid="auto-label">{autoLabel}</span>
-          </label>
-
-          <div mix={statusCss}>
-            <span
-              data-testid="status-dot"
-              data-tier={tier}
-              mix={statusDotCss}
-              style={{ background: status.color, boxShadow: `0 0 8px ${status.color}` }}
-            />
-            <span data-testid="status-label" aria-live="polite">
-              {status.label}
-            </span>
-          </div>
-        </div>
-
-        <div mix={budgetStripCss}>
-          <span mix={budgetCaptionCss}>Request budget</span>
-          <div aria-label="Requests left this minute" mix={pipsCss}>
-            {Array.from({ length: BUDGET_CAP }, (_, i) => (
-              <span key={i} data-testid="budget-pip" data-filled={i < budgetView.whole ? 'true' : 'false'} mix={pipCss} />
-            ))}
-          </div>
-          <span data-testid="budget-label" mix={budgetLabelCss}>
-            {budgetView.whole >= BUDGET_CAP
-              ? `${budgetView.whole}/${BUDGET_CAP} left this minute`
-              : `${budgetView.whole}/${BUDGET_CAP} left this minute · +1 in ${budgetView.nextTokenIn}s`}
-          </span>
-          <span mix={roleLabelCss}>
-            {isLeaderNow ? 'this tab polls for all tabs' : 'another tab is polling — results arrive here free'}
-          </span>
-        </div>
+        {renderBudgetStrip(budget, isLeaderNow)}
 
         {bannerText && (
           <div data-testid="banner" mix={bannerCss}>
@@ -1116,18 +585,20 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         </div>
 
         {effectiveView === 'cards' ? (
-          <div mix={gridCss}>
-            {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, effectiveView, true))}
-          </div>
-        ) : scope === 'all' && windowRange ? (
-          renderWindowedTable(windowRange, windowedSymbols, visibleCount, dim, effectiveView, trackedSet)
+          <div mix={gridCss}>{sortedSymbols.map(renderRow)}</div>
+        ) : windowRange ? (
+          renderWindowedTable({
+            range: windowRange,
+            rows: visibleSymbols.slice(windowRange.startIndex, windowRange.endIndex).map(renderRow),
+            totalCount: visibleCount,
+            isDragActive: () => sort === 'custom' && dragSym !== null,
+            autoScroller,
+            onScroll: onViewportScroll,
+            onMeasure: onViewportMeasure,
+            onDragCancel: cancelDrag,
+          })
         ) : (
-          <div mix={tableWrapCss}>
-            <div mix={tableInnerCss}>
-              {renderTableHeader()}
-              {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, effectiveView, true))}
-            </div>
-          </div>
+          renderPlainTable(sortedSymbols.map(renderRow))
         )}
 
         {visibleCount === 0 && query && (
@@ -1144,75 +615,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       </div>
     )
   }
-}
 
-// The two `renderCard` branch assemblies: same shared leaves (built once by
-// `renderCard`), different container element/grouping/layout css per view.
-function renderTableRow(card: CardAssembly) {
-  return (
-    <div
-      key={card.symbol}
-      data-testid="asset-card"
-      data-symbol={card.symbol}
-      data-name={card.name}
-      data-hidden={card.hidden ? 'true' : undefined}
-      data-dimmed={card.dim ? 'true' : undefined}
-      data-history-length={String(card.historyLength)}
-      style={card.containerStyle}
-      mix={[tableRowCss, ...card.dragMixins]}
-    >
-      {/* A handle-less (untracked All-scope) row still needs a grid child
-          occupying the handle column — an empty placeholder, not a missing
-          child — or the grid's implicit auto-placement shifts every
-          following cell one column left (AC-99). */}
-      {card.dragHandle ?? <span aria-hidden="true" />}
-      <span mix={tableAssetCellCss}>
-        {card.badge}
-        {card.titles}
-      </span>
-      {card.usdValue}
-      {card.btcValue}
-      {card.deltaValue}
-      <span mix={tableTrendCellCss}>{card.sparkline}</span>
-      {card.pinButton}
-    </div>
-  )
-}
-
-function renderCardTile(card: CardAssembly) {
-  return (
-    <div
-      key={card.symbol}
-      data-testid="asset-card"
-      data-symbol={card.symbol}
-      data-name={card.name}
-      data-hidden={card.hidden ? 'true' : undefined}
-      data-dimmed={card.dim ? 'true' : undefined}
-      data-history-length={String(card.historyLength)}
-      style={card.containerStyle}
-      mix={[cardCss, ...card.dragMixins]}
-    >
-      <div mix={cardHeaderCss}>
-        {card.badge}
-        {card.titles}
-        {card.pinButton}
-        {card.dragHandle}
-      </div>
-
-      <div mix={priceRowCss}>
-        <span>
-          <span mix={usdCaptionCss}>USD</span>
-          {card.usdValue}
-        </span>
-        {card.sparkline}
-      </div>
-
-      <div mix={footerRowCss}>
-        {card.btcValue}
-        {card.deltaValue}
-      </div>
-    </div>
-  )
 }
 
 export const RatesDashboardEntry = clientEntry(import.meta.url, function RatesDashboardEntry(
@@ -1234,152 +637,9 @@ function createDefaultKv(): KVStore {
   } catch {
     // Accessing localStorage can throw (e.g. private-browsing quota).
   }
-  return {
-    getItem: () => null,
-    setItem: () => {},
-  }
-}
-
-// Clamps a (possibly stale) scrollTop to the current item count's actual
-// scrollable extent, so a render triggered by something other than a scroll
-// event (a filter keystroke, a scope switch) never hands computeWindow a
-// start position past the end of a just-shrunk list (AC-97).
-function clampScrollTop(scrollTop: number, itemCount: number, viewportHeight: number): number {
-  let maxScrollTop = Math.max(0, itemCount * ROW_HEIGHT_PX - viewportHeight)
-  return Math.min(scrollTop, maxScrollTop)
+  return { getItem: () => null, setItem: () => {} }
 }
 
 function randomTabId(): string {
   return Math.random().toString(36).slice(2)
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string')
-}
-
-function isViewMode(value: unknown): value is ViewMode {
-  return value === 'cards' || value === 'table'
-}
-
-function isScope(value: unknown): value is Scope {
-  return value === 'curated' || value === 'all'
-}
-
-// Reuses cache.ts's own validator (isRatesCache) rather than a second,
-// weaker shape check, so the storage-event adoption path and the mount-time
-// localStorage read agree on exactly what a valid cache payload looks like.
-function parseCachePayload(raw: string): RatesCache | null {
-  try {
-    let value: unknown = JSON.parse(raw)
-    return isRatesCache(value) ? value : null
-  } catch {
-    // Ignore malformed storage payloads — treated like no update.
-    return null
-  }
-}
-
-// Mirrors parseCachePayload's shape: reuse order-store.ts's own validator
-// rather than a second, weaker check.
-function parseOrderRecordPayload(raw: string): OrderRecord | null {
-  try {
-    let value: unknown = JSON.parse(raw)
-    return isOrderRecord(value) ? value : null
-  } catch {
-    return null
-  }
-}
-
-// Web Locks API port (ADR 0007): guarded so SSR and browsers without the API
-// silently degrade to writeOrder's unlocked path — no crash, no feature loss
-// beyond the lock's collision protection ("no error page, ever"). Typed
-// directly against DOM's own `Navigator.locks`/`LockManager` rather than a
-// widening `as unknown` cast, now that `LocksPort.request`'s callback shape
-// matches the real `LockGrantedCallback` signature.
-function createLocksPort(): LocksPort | undefined {
-  if (typeof navigator === 'undefined') return undefined
-  let manager = navigator.locks
-  if (!manager) return undefined
-  return {
-    request<T>(name: string, fn: (lock?: Lock | null) => Promise<T> | T): Promise<T> {
-      return manager.request(name, fn)
-    },
-  }
-}
-
-function sparkPoints(history: number[]): string {
-  let recent = history.slice(-24)
-  if (recent.length < 2) return '0,10 68,10'
-
-  let min = Math.min(...recent)
-  let max = Math.max(...recent)
-  let span = max - min || 1
-
-  return recent
-    .map((value, index) => {
-      let x = (index / (recent.length - 1)) * 68
-      let y = 18 - ((value - min) / span) * 16
-      return `${x.toFixed(1)},${y.toFixed(1)}`
-    })
-    .join(' ')
-}
-
-function formatAge(ms: number): string {
-  let seconds = ms / 1000
-  return seconds < 60 ? `${Math.round(seconds)}s ago` : `${Math.round(seconds / 60)}m ago`
-}
-
-function computeStatus(tier: Staleness, ageMs: number, failures: number): { label: string; color: string } {
-  if (tier === 'none') {
-    return failures > 0
-      ? { label: 'Feed unreachable', color: 'var(--color-negative)' }
-      : { label: 'Fetching first rates…', color: 'var(--color-neutral-500)' }
-  }
-
-  let ageText = formatAge(ageMs)
-  if (tier === 'live') return { label: `Live · ${ageText}`, color: 'var(--color-accent-400)' }
-  if (tier === 'stale') return { label: `Stale · ${ageText}`, color: 'var(--color-warning)' }
-  return { label: `Last known good · ${ageText}`, color: 'var(--color-negative)' }
-}
-
-function computeBanner(
-  tier: Staleness,
-  hasRates: boolean,
-  failures: number,
-  ageText: string,
-): string | null {
-  if (tier === 'expired') {
-    return (
-      `Showing the last values we trust, from ${ageText}. Past two minutes we stop treating them ` +
-      'as prices: figures dim and the dot turns red. Nothing here is an error page.'
-    )
-  }
-  if (!hasRates && failures > 0) return NO_CACHE_BANNER
-  return null
-}
-
-function computeBudgetView(tokens: number): { whole: number; nextTokenIn: number } {
-  let whole = Math.floor(tokens)
-  let fractional = tokens - whole
-  let nextTokenIn = Math.ceil(((1 - fractional) * (BUDGET_WINDOW_MS / BUDGET_CAP)) / 1000)
-  return { whole, nextTokenIn }
-}
-
-function renderSparkline(points: string, color: string) {
-  return (
-    <svg
-      viewBox="0 0 68 20"
-      preserveAspectRatio="none"
-      style={{ width: '68px', height: '20px', display: 'block', overflow: 'visible' }}
-    >
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        stroke-width="1.25"
-        stroke-linejoin="round"
-        stroke-linecap="round"
-        vector-effect="non-scaling-stroke"
-      />
-    </svg>
-  )
 }

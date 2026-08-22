@@ -43,6 +43,34 @@ Two dev modes exist: `npm run dev` runs `server.ts` directly with `--watch` (ful
 
 Layout rules (from AGENTS.md): grow into `app/data/`, `app/ui/`, `test/` only when needed; put code in the narrowest owner first; shared cross-route UI goes in `app/ui/`; never create `app/lib/`, `app/components/`, or `app/controllers/`.
 
+### The dashboard feature tree (`app/actions/public/rates/`)
+
+Everything the browser bundle needs lives here (see CONV-structure-1 — `allowFiles` makes
+`app/**/public/**` the bundle's security boundary, which is why these are route-local and not in
+`app/utils/`). When adding a feature, extend the matching layer rather than growing the root:
+
+| Layer | Modules | Rule |
+| --- | --- | --- |
+| State + wiring | `rates-dashboard.tsx` | The only stateful module. Owns setup-scope state, decides, and calls `handle.update()`. Add state here; add markup elsewhere. |
+| Presentation | `card.tsx`, `toolbar.tsx`, `table.tsx`, `budget-strip.tsx`, `sparkline.tsx` | Pure render helpers over an explicit props object. No state, no persistence. Anything state-dependent is a callback back into the root. |
+| Derived rules | `status.ts`, `sort.ts`, `format.ts`, `order.ts`, `history.ts`, `window.ts`, `search-index.ts` | Pure functions over plain data. Unit-tested directly, no DOM. |
+| Persistence | `persisted.ts`, `snapshot.ts`, `cache.ts`, `budget.ts`, `lease.ts`, `order-store.ts`, `locks.ts` | Versioned keys read through validating, fallback-safe helpers; injected `KVStore`/`clock`/`LocksPort` (CONV-testing-3). |
+| I/O + types | `coinbase.ts`, `rate.ts`, `currencies.ts` | `coinbase.ts` is the single network adapter. `rate.ts` holds the shared `Rate`/`RatesMap` types — don't re-spell the shape inline. |
+
+Two traps specific to this tree:
+
+- **Live state vs. render snapshots.** A render helper's props are a snapshot from the last
+  render. Anything that can change *within a single event turn* — notably whether a drag is in
+  flight — must be read live (guard in the root, or pass a predicate like `isDragActive()`), not
+  captured as a boolean prop. A drag that starts and drops in one turn will otherwise see stale
+  props and silently do nothing.
+- **Row height is a shared invariant.** The windowed list's spacer arithmetic assumes every table
+  row is exactly `TABLE_ROW_HEIGHT_PX` (`styles.ts`) tall, which is why that constant both sizes
+  the row in CSS and feeds `computeWindow`. If the two ever drift, the spacers mis-state the
+  scroll extent and the tail of the list becomes unreachable — and DOM/attribute tests stay green
+  throughout, because the spacer counts remain self-consistent. Verify row geometry in a real
+  browser after touching row styling.
+
 ## Design Handoff (`designs/`)
 
 `designs/README.md` is the full spec for the dashboard to build: 15 crypto assets with live USD/BTC rates from Coinbase's public endpoint, filter/sort/pin/drag-reorder, a shared 10-requests-per-minute budget across tabs (leaky bucket + single-poller lease in localStorage), and tiered staleness with no error pages ever. Read it before implementing dashboard features — it specifies exact layout, formatting rules, state shape, and the reasoning behind resilience decisions.

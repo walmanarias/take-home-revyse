@@ -2,14 +2,15 @@
 // no clock, no I/O.
 
 import { displayNameFor } from './currencies.ts'
+import type { RatesMap } from './rate.ts'
 
 export type SortMode = 'custom' | 'name' | 'usd' | 'delta'
 
-type RatesMap = Record<string, { usd: number; btc: number }> | null
+type MaybeRates = RatesMap | null
 
 function comparatorFor(
   mode: SortMode,
-  rates: RatesMap,
+  rates: MaybeRates,
   deltas: Record<string, number>,
 ): ((a: string, b: string) => number) | null {
   switch (mode) {
@@ -29,7 +30,7 @@ export function sortSymbols(
   mode: SortMode,
   symbols: string[],
   favs: string[],
-  rates: RatesMap,
+  rates: MaybeRates,
   deltas: Record<string, number>,
 ): string[] {
   let ordered = [...symbols]

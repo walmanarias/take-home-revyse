@@ -32,10 +32,19 @@ the file as one passing test without executing its `remix/test` suite bodies.
 
 ### Where things live
 
-- `app/actions/public/rates/` — the whole feature: the client-hydrated `RatesDashboard`
-  component plus small pure modules (`coinbase`, `budget`, `lease`, `cache`, `order`,
-  `order-store`, `sort`, `format`, `history`, `window`, `search-index`, `persisted`),
-  `currencies.ts` (the curated list), `tokens.css` / `styles.ts` (Nocturne tokens).
+- `app/actions/public/rates/` — the whole feature, split by layer:
+  - **State + wiring:** `rates-dashboard.tsx` — the only stateful module.
+  - **Presentation:** `toolbar.tsx`, `card.tsx`, `table.tsx`, `budget-strip.tsx`,
+    `sparkline.tsx` — pure render helpers over an explicit props object.
+  - **Derived rules:** `status`, `sort`, `format`, `order`, `history`, `window`, `search-index`
+    — pure functions over plain data, unit-tested with no DOM.
+  - **Persistence:** `persisted`, `snapshot`, `cache`, `budget`, `lease`, `order-store`, `locks`
+    — versioned keys behind validating, fallback-safe helpers.
+  - **I/O + types:** `coinbase.ts` (the one network adapter), `rate.ts` (shared `Rate`/`RatesMap`),
+    `currencies.ts` (the curated list), `tokens.css` / `styles.ts` (Nocturne tokens).
+
+  CLAUDE.md's "dashboard feature tree" table says which layer new code belongs in, and records
+  the two traps this split has (live state vs. render snapshots; the shared row-height invariant).
 - `app/actions/controller.tsx`, `home-page.tsx`, `document.tsx` — the server-rendered route chrome.
 - `app/routes.ts` / `app/router.ts` / `app/middleware/render.tsx` / `app/assets.ts` — routing,
   the request-scoped renderer, and the browser asset pipeline (unchanged scaffold).

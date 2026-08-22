@@ -1,6 +1,7 @@
 // Last-known-good rates cache + staleness tiers (FR-11).
 
 import { type KVStore, readJSON, writeJSON } from './persisted.ts'
+import type { RatesMap } from './rate.ts'
 
 export type Staleness = 'live' | 'stale' | 'expired' | 'none'
 
@@ -16,7 +17,7 @@ export function staleness(fetchedAt: number | null, now: number): Staleness {
 }
 
 export interface RatesCache {
-  rates: Record<string, { usd: number; btc: number }>
+  rates: RatesMap
   fetchedAt: number
   history: Record<string, number[]>
 }
@@ -42,4 +43,18 @@ export function readCache(kv: KVStore): RatesCache | null {
 
 export function writeCache(kv: KVStore, cache: RatesCache): void {
   writeJSON(kv, CACHE_KEY, cache)
+}
+
+/**
+ * Parses a raw `storage`-event payload for `CACHE_KEY` with the same
+ * validator the mount-time read uses, so both adoption paths agree on what
+ * a valid cache looks like. Malformed JSON is treated like no update.
+ */
+export function parseCachePayload(raw: string): RatesCache | null {
+  try {
+    let value: unknown = JSON.parse(raw)
+    return isRatesCache(value) ? value : null
+  } catch {
+    return null
+  }
 }

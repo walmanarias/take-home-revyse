@@ -1,11 +1,13 @@
 // Session-scoped USD sample history: FIFO accumulation (capped) plus the
 // session Δ derived from it. Pure — no DOM, no clock, no I/O.
 
+import type { RatesMap } from './rate.ts'
+
 export const HISTORY_LIMIT = 48
 
 export function appendHistory(
   history: Record<string, number[]>,
-  newRates: Record<string, { usd: number; btc: number }>,
+  newRates: RatesMap,
   trackedSymbols: readonly string[],
 ): Record<string, number[]> {
   let next: Record<string, number[]> = { ...history }
@@ -18,7 +20,7 @@ export function appendHistory(
   return next
 }
 
-export function computeDelta(history: number[]): number | null {
+export function computeDelta(history: readonly number[]): number | null {
   if (history.length < 2) return null
   let first = history[0]!
   let last = history[history.length - 1]!

@@ -3,25 +3,13 @@
 // once, into `order.v2` (`{ schemaVersion, updatedAt, order }`) and then left
 // in place, untouched, for rollback safety.
 
+import type { LocksPort } from './locks.ts'
 import { type KVStore, readJSON, readOrder, writeJSON } from './persisted.ts'
 
 export interface OrderRecord {
   schemaVersion: number
   updatedAt: number
   order: string[]
-}
-
-/**
- * Structural port over `navigator.locks.request` so production code can
- * inject the real Web Locks API and tests can inject a deterministic fake —
- * see `test/support/fakes.ts`'s `createSerializingLocksPort()`. `fn`'s
- * signature mirrors `LockGrantedCallback` (`(lock) => ...`) so a real
- * `LockManager` can be passed through without a shape-widening cast; the
- * `lock` parameter is optional since callers here (`writeOrder`'s `commit`)
- * never need it — only its presence in the callback shape.
- */
-export interface LocksPort {
-  request<T>(name: string, fn: (lock?: Lock | null) => Promise<T> | T): Promise<T>
 }
 
 export const ORDER_KEY = 'nocturne.rates.order.v1'
@@ -106,4 +94,18 @@ export async function writeOrder(kv: KVStore, record: OrderRecord, locks?: Locks
  */
 export function adoptOrderRecord(local: OrderRecord, incoming: OrderRecord): OrderRecord {
   return incoming.updatedAt > local.updatedAt ? incoming : local
+}
+
+/**
+ * Parses a raw `storage`-event payload for `ORDER_V2_KEY` with the same
+ * validator the mount-time read uses. Malformed JSON is treated like no
+ * update.
+ */
+export function parseOrderRecordPayload(raw: string): OrderRecord | null {
+  try {
+    let value: unknown = JSON.parse(raw)
+    return isOrderRecord(value) ? value : null
+  } catch {
+    return null
+  }
 }

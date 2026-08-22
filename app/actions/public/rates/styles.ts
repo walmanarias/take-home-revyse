@@ -12,11 +12,16 @@ export const focusRingCss = css({
   },
 })
 
+// A flex column so the list region (grid or table) claims whatever vertical
+// space the chrome above it doesn't use, instead of every view stopping at
+// its own content height and leaving the rest of a tall screen empty.
 export const rootCss = css({
+  display: 'flex',
+  flexDirection: 'column',
   background: 'var(--color-bg)',
   color: 'var(--color-text)',
   fontFamily: 'var(--font-body)',
-  padding: '22px clamp(12px, 4vw, 48px) 64px',
+  padding: '22px clamp(12px, 4vw, 48px) 32px',
   minHeight: '100vh',
 })
 
@@ -168,6 +173,7 @@ export const bannerCss = css({
 export const noticeCss = css({ margin: '0 0 10px', fontSize: '12px', color: 'var(--color-neutral-500)' })
 export const emptyStateCss = css({ margin: '26px 4px', fontSize: '13px', color: 'var(--color-neutral-600)' })
 export const footnoteCss = css({
+  flex: 'none',
   margin: '22px 4px 0',
   fontSize: '11px',
   lineHeight: 1.7,
@@ -183,19 +189,30 @@ export const visuallyHiddenCss = css({
 })
 
 export const gridCss = css({
+  flex: '1 1 auto',
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fill, minmax(248px, 1fr))',
   gap: '11px',
   alignItems: 'start',
+  alignContent: 'start',
 })
 
 // Table view (designs/README.md "Table" + "Row anatomy"): a CSS grid, not a
 // <table>, so rows stay valid drag targets. Header and rows share one
 // column template so their cells line up.
+//
+// The windowed list's arithmetic (ADR 0006) assumes every row is exactly
+// this tall, so the row height is declared here — as an exported constant
+// AND as an explicit `height` on the row — rather than left to whatever the
+// content happens to measure. When the two disagree the spacers mis-state
+// the scroll extent and the tail of the list becomes unreachable, a defect
+// that stays invisible to DOM/attribute assertions because the spacer counts
+// remain self-consistent either way.
+export const TABLE_ROW_HEIGHT_PX = 57
 const TABLE_COLUMNS =
   '26px minmax(150px, 1.5fr) minmax(96px, 1fr) minmax(96px, 1fr) 92px 74px 30px'
 
-export const tableWrapCss = css({ overflowX: 'auto' })
+export const tableWrapCss = css({ flex: '1 1 auto', minHeight: 0, overflowX: 'auto' })
 export const tableInnerCss = css({
   minWidth: '660px',
   display: 'flex',
@@ -205,8 +222,20 @@ export const tableInnerCss = css({
 // viewport (tests may override `.style.height`) so `computeWindow` has a
 // stable viewport to measure against; scrolls both axes since the inner
 // content still carries the 660px table minimum width.
+// Two things this has to get right at once:
+//
+// `flex-basis: 0` (not `auto`, and not `0%` — a percentage against the
+// column's indefinite height resolves back to `content`) keeps the box from
+// being sized by its own rows. With an `auto` basis a 300-row list stretches
+// the viewport to fit all 12000px of it and windowing never engages.
+//
+// `min-height` is the floor, not the height: 480px was this viewport's fixed
+// height before, so it stays the guaranteed minimum, and `flex-grow` lets it
+// claim the rest of a taller screen instead of stopping short and leaving
+// dead space under the last row.
 export const tableViewportCss = css({
-  height: '480px',
+  flex: '1 1 0px',
+  minHeight: '480px',
   overflowX: 'auto',
   overflowY: 'auto',
   position: 'relative',
@@ -233,6 +262,7 @@ export const tableRowCss = css({
   gridTemplateColumns: TABLE_COLUMNS,
   gap: '10px',
   alignItems: 'center',
+  height: `${TABLE_ROW_HEIGHT_PX}px`,
   padding: '9px 4px',
   borderRadius: 'var(--radius-sm)',
   transition: 'background 120ms ease, opacity 120ms ease, box-shadow 120ms ease',

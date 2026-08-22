@@ -41,6 +41,19 @@
   recurring risk worth watching on the next pass.
 - From: crypto-dashboard (review finding, `rates-dashboard.tsx` vs design brief), 2026-08-21.
 
+### CONV-structure-4: Presentational modules take explicit props; anything that can change mid-event-turn is read live, not snapshotted
+- Why: `rates-dashboard.tsx` is the only stateful module; the render helpers it composes
+  (`card.tsx`, `toolbar.tsx`, `table.tsx`, ...) receive a plain props object and call back into
+  the root for every decision. But props are a snapshot of the *last* render, so a flag like "a
+  drag is currently in flight" goes stale the moment a gesture starts and completes inside one
+  event turn — exactly what a `dragstart`/`dragover`/`drop` burst does. Guard on live state in
+  the root, or pass a predicate (`isDragActive()`); reserve boolean props for values that can
+  only change *between* renders (e.g. `draggable`, derived from the sort mode).
+- Example: caught by AC-44/AC-80 during the module-split refactor — every drag test dispatches
+  its whole gesture inside a single `result.act(...)`, so a snapshotted `dragActive` prop made
+  every drop a silent no-op.
+- From: crypto-dashboard (module-split refactor), 2026-08-22.
+
 ## Testing
 
 ### CONV-testing-1: Real-DOM/browser component tests use the `*.test.browser.tsx` suffix, run via `remix test`
@@ -99,6 +112,19 @@
   `--color-warning` and `--color-negative` — used by `computeStatus`/Δ formatting instead of
   inline hex; a review pass flagged (and fixed) remaining hardcoded hexes before merge.
 - From: crypto-dashboard (ADR 0002, review should-fix finding, `computeStatus`), 2026-08-21.
+
+### CONV-styling-3: A layout constant the render math depends on is declared once, in the stylesheet that applies it
+- Why: the windowed table's spacer arithmetic assumes a fixed row height. When that height lived
+  as a bare constant in the windowing module while CSS sized the row from its content, the two
+  silently disagreed (40px assumed vs. 56.7px rendered) — the spacers understated the scroll
+  extent by ~10,000px and the tail of the list was unreachable. Every DOM/attribute test stayed
+  green, because the spacer counts were self-consistent with the wrong constant; only a real
+  browser measurement exposed it.
+- Rule: export the constant from the stylesheet that also applies it (`styles.ts`'s
+  `TABLE_ROW_HEIGHT_PX` both sets `height` on `tableRowCss` and feeds `computeWindow`), so the
+  rendered geometry and the arithmetic cannot drift. Measure row pitch in a real browser after
+  touching row styling.
+- From: crypto-dashboard (visual-QA catch during the module-split refactor), 2026-08-22.
 
 ### CONV-styling-2: The base/token stylesheet sets `box-sizing: border-box` globally
 - Why: without it, padding/border silently inflate an element's rendered footprint beyond its

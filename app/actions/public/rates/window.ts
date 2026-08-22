@@ -40,3 +40,21 @@ export function computeWindow(metrics: WindowMetrics): WindowRange {
     bottomSpacerPx: (itemCount - end) * rowHeight,
   }
 }
+
+/**
+ * Clamps a (possibly stale) `scrollTop` to the scrollable extent of the
+ * current item count. A render triggered by something other than a scroll
+ * event (a filter keystroke, a scope switch) can shrink the list under a
+ * deep `scrollTop`; without this, `computeWindow` would be handed a start
+ * past the end of the just-shrunk list and render a false-empty window
+ * (AC-97).
+ */
+export function clampScrollTop(
+  scrollTop: number,
+  itemCount: number,
+  rowHeight: number,
+  viewportHeight: number,
+): number {
+  let maxScrollTop = Math.max(0, itemCount * rowHeight - viewportHeight)
+  return Math.min(scrollTop, maxScrollTop)
+}
