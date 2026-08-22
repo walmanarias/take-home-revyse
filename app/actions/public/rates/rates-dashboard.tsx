@@ -107,6 +107,19 @@ const SCOPE_KEY = 'nocturne.rates.scope.v1'
 type ViewMode = 'cards' | 'table'
 type Scope = 'curated' | 'all'
 
+// Every piece of localStorage-derived state that can change what the very
+// first render shows (AC-100) — bundled so a hydrating mount's cold first
+// render and its post-mount adoption of the real persisted values both go
+// through the exact same shape, applied together in one `handle.update()`.
+interface PersistedSnapshot {
+  cache: RatesCache | null
+  favs: string[]
+  order: string[]
+  orderUpdatedAt: number
+  view: ViewMode
+  scope: Scope
+}
+
 // Windowing (ADR 0006, T2): rows are a fixed height so `computeWindow` never
 // measures the DOM. `DEFAULT_VIEWPORT_HEIGHT_PX` matches `tableViewportCss`'s
 // own default height and seeds the very first render, before any real
@@ -188,34 +201,29 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let budgetStore = createBudgetStore(kv, clock)
   let leaseStore = createLeaseStore(kv, clock)
 
-  let cache = readCache(kv)
+  // AC-100: a real hydration's very first render must match the server's
+  // cold-start markup byte-for-byte (SSR never has localStorage, so it's
+  // always the same fixed defaults) — reading real persisted state
+  // synchronously here would otherwise hand hydration different rendered
+  // TEXT (a warm cache's price/history, a spent budget's pip count, a
+  // reordered/pinned symbol list, "all"/"table" scope/view) and trigger a
+  // framework hydration-mismatch. While hydrating, every persisted read is
+  // deferred to `readPersistedSnapshot()`'s call inside `start()` (a real
+  // post-mount task), applied together in one `handle.update()`. A direct
+  // test mount (`hydrating` unset) reads them synchronously here instead, as
+  // every other test already depends on (AC-25..29, AC-77..96, ...).
+  let persistedAdopted = !hydrating
+  let snapshot = persistedAdopted ? readPersistedSnapshot() : coldSnapshot()
+
+  let cache = snapshot.cache
   let rates: Record<string, { usd: number; btc: number }> | null = cache?.rates ?? null
   let fetchedAt: number | null = cache?.fetchedAt ?? null
   let history: Record<string, number[]> = cache?.history ?? {}
-
-  // A previously-pinned uncurated symbol (ADR 0006) is only "valid" to keep
-  // across a reload if we have some evidence it's a real symbol — the
-  // last-known-good cache's own fetched universe is the best guess available
-  // synchronously at setup, before any fetch has run this session.
-  let knownUniverseAtSetup = rates ? Object.keys(rates) : []
-  let favs = readJSON<string[]>(kv, FAVS_KEY, [], isStringArray).filter(
-    (symbol) => ALL_SYMBOLS.includes(symbol) || knownUniverseAtSetup.includes(symbol),
-  )
-
-  let orderRecord = readOrderRecord(kv, computeValidSymbolsForOrder(), clock)
-  let order = orderRecord.order
-  let orderUpdatedAt = orderRecord.updatedAt
-
-  // AC-100: a real hydration's first render must match the server's
-  // cold-start markup (always "cards"/"curated", since SSR never has
-  // localStorage) — so while hydrating, start cold and adopt the real
-  // persisted view/scope only after that first render has committed (see
-  // `start()`). A direct test mount (`hydrating` unset) reads them
-  // synchronously here, as every other test already depends on.
-  let persistedView = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
-  let persistedScope = readJSON<Scope>(kv, SCOPE_KEY, 'curated', isScope)
-  let view: ViewMode = hydrating ? 'cards' : persistedView
-  let scope: Scope = hydrating ? 'curated' : persistedScope
+  let favs = snapshot.favs
+  let order = snapshot.order
+  let orderUpdatedAt = snapshot.orderUpdatedAt
+  let view = snapshot.view
+  let scope = snapshot.scope
 
   let filter = ''
   let sort: SortMode = 'custom'
@@ -258,11 +266,22 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
 
   function start() {
     // AC-100: now that the first (cold-matching) render has committed, adopt
-    // whatever view/scope was actually persisted — a no-op unless
-    // `hydrating` forced the cold start above.
-    if (hydrating && (view !== persistedView || scope !== persistedScope)) {
-      view = persistedView
-      scope = persistedScope
+    // whatever was actually persisted — cache/rates/history, budget, favs,
+    // order, view, and scope together in one update. A no-op unless
+    // `hydrating` forced the cold start above (`persistedAdopted` is already
+    // `true` for a direct test mount).
+    if (!persistedAdopted) {
+      let persisted = readPersistedSnapshot()
+      cache = persisted.cache
+      rates = cache?.rates ?? null
+      fetchedAt = cache?.fetchedAt ?? null
+      history = cache?.history ?? {}
+      favs = persisted.favs
+      order = persisted.order
+      orderUpdatedAt = persisted.orderUpdatedAt
+      view = persisted.view
+      scope = persisted.scope
+      persistedAdopted = true
       handle.update()
     }
 
@@ -420,14 +439,57 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   }
 
   function resyncOrderFromStorage() {
-    let stored = readOrderRecord(kv, computeValidSymbolsForOrder(), clock)
+    let stored = readOrderRecord(kv, computeValidSymbolsForOrder(favs), clock)
     order = stored.order
     orderUpdatedAt = stored.updatedAt
     handle.update()
   }
 
-  function computeValidSymbolsForOrder(): string[] {
-    return Array.from(new Set([...ALL_SYMBOLS, ...favs]))
+  function computeValidSymbolsForOrder(favsList: string[]): string[] {
+    return Array.from(new Set([...ALL_SYMBOLS, ...favsList]))
+  }
+
+  // AC-100: every synchronous persisted read in one place, so both the
+  // (non-hydrating) setup-time read and the (hydrating) post-mount adoption
+  // in `start()` go through the identical logic — the same "last-known-good
+  // cache's fetched universe validates a pinned uncurated symbol" rule
+  // documented below applies either way.
+  function readPersistedSnapshot(): PersistedSnapshot {
+    let cache = readCache(kv)
+    // A previously-pinned uncurated symbol (ADR 0006) is only "valid" to
+    // keep across a reload if we have some evidence it's a real symbol — the
+    // last-known-good cache's own fetched universe is the best guess
+    // available without a fetch having run this session yet.
+    let knownUniverse = cache ? Object.keys(cache.rates) : []
+    let favs = readJSON<string[]>(kv, FAVS_KEY, [], isStringArray).filter(
+      (symbol) => ALL_SYMBOLS.includes(symbol) || knownUniverse.includes(symbol),
+    )
+    let orderRecord = readOrderRecord(kv, computeValidSymbolsForOrder(favs), clock)
+    let view = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
+    let scope = readJSON<Scope>(kv, SCOPE_KEY, 'curated', isScope)
+    return {
+      cache,
+      favs,
+      order: orderRecord.order,
+      orderUpdatedAt: orderRecord.updatedAt,
+      view,
+      scope,
+    }
+  }
+
+  // The fixed shape SSR always renders (no localStorage there, ever) —
+  // exactly what `readPersistedSnapshot()` itself would compute against an
+  // empty/no-op `kv`, kept as an explicit constant-shaped default rather
+  // than re-deriving it through a real (if inert) kv round-trip.
+  function coldSnapshot(): PersistedSnapshot {
+    return {
+      cache: null,
+      favs: [],
+      order: [...ALL_SYMBOLS],
+      orderUpdatedAt: clock(),
+      view: 'cards',
+      scope: 'curated',
+    }
   }
 
   function computeTrackedSet(): Set<string> {
@@ -886,7 +948,13 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     let dim = tier === 'expired'
     let ageMs = now - (fetchedAt ?? now)
     let status = computeStatus(tier, ageMs, failures)
-    let budgetState = budgetStore.read(now)
+    // AC-100: budgetStore re-reads its own kv record on every call (unlike
+    // cache/order/favs/view/scope, which are captured once as setup-scope
+    // state) — the cold default matches exactly what SSR's own
+    // `budgetStore.read(now)` against an empty/no-op kv already computes
+    // (`refill` with no stored record yields a full, freshly-timestamped
+    // bucket), so it's gated here rather than folded into the snapshot.
+    let budgetState = persistedAdopted ? budgetStore.read(now) : { tokens: BUDGET_CAP, ts: now }
     let budgetView = computeBudgetView(budgetState.tokens)
     let bannerText = computeBanner(tier, rates !== null, failures, formatAge(ageMs))
     let autoLabel = computeAutoLabel()
