@@ -32,6 +32,20 @@
 //     (AC-71 permits a "class or computed style assertion"; this repo uses the
 //     class form since Nocturne's tokens aren't loaded into an isolated
 //     component-test render).
+//
+// View toggle (AC-77..82, cards <-> table):
+//   - Root [data-testid="rates-dashboard"] also carries `data-view="cards"|"table"`
+//     reflecting the active view.
+//   - Toolbar: [data-testid="view-toggle"] wraps exactly two option controls,
+//     [data-testid="view-toggle-cards"] and [data-testid="view-toggle-table"],
+//     each with an accessible name containing "Cards"/"Table" respectively and
+//     an `aria-pressed` reflecting the active option.
+//   - Table view only: [data-testid="table-header"] renders once, containing
+//     (case-insensitively) the column labels Asset, USD, BTC, "Session Δ",
+//     and Trend.
+//   - The per-asset contract above (`asset-card`, `usd-value`, `pin-button`,
+//     `drag-handle`, ...) is identical in both views — table view renders one
+//     `[data-testid="asset-card"]` per row rather than a second markup shape.
 
 export interface KVStore {
   getItem(key: string): string | null
@@ -94,6 +108,7 @@ export const ORDER_KEY = 'nocturne.rates.order.v1'
 export const FAVS_KEY = 'nocturne.rates.favs.v1'
 export const LEASE_KEY = 'nocturne.rates.lease.v1'
 export const BUDGET_KEY = 'nocturne.rates.budget.v1'
+export const VIEW_KEY = 'nocturne.rates.view.v1'
 
 export type FakeFetchedRates = {
   rates: Record<string, { usd: number; btc: number }>

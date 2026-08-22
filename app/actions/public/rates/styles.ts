@@ -185,6 +185,54 @@ export const gridCss = css({
   alignItems: 'start',
 })
 
+// Table view (designs/README.md "Table" + "Row anatomy"): a CSS grid, not a
+// <table>, so rows stay valid drag targets. Header and rows share one
+// column template so their cells line up.
+const TABLE_COLUMNS =
+  '26px minmax(150px, 1.5fr) minmax(96px, 1fr) minmax(96px, 1fr) 92px 74px 30px'
+
+export const tableWrapCss = css({ overflowX: 'auto' })
+export const tableInnerCss = css({
+  minWidth: '660px',
+  display: 'flex',
+  flexDirection: 'column',
+})
+export const tableHeaderCss = css({
+  boxSizing: 'border-box',
+  display: 'grid',
+  gridTemplateColumns: TABLE_COLUMNS,
+  gap: '10px',
+  alignItems: 'center',
+  padding: '0 4px 7px',
+  fontSize: '11px',
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: 'var(--color-neutral-600)',
+  // The fading 1px rule, painted as the header row's own bottom background
+  // (a Nocturne signature — see .table in designs/nocturne/styles.css).
+  background:
+    'linear-gradient(to right, transparent, var(--color-divider) 48px, var(--color-divider) calc(100% - 48px), transparent) no-repeat bottom / 100% 1px',
+})
+export const tableRowCss = css({
+  boxSizing: 'border-box',
+  display: 'grid',
+  gridTemplateColumns: TABLE_COLUMNS,
+  gap: '10px',
+  alignItems: 'center',
+  padding: '9px 4px',
+  borderRadius: 'var(--radius-sm)',
+  transition: 'background 120ms ease, opacity 120ms ease, box-shadow 120ms ease',
+  '&:hover': { background: 'color-mix(in srgb, var(--color-text) 5%, transparent)' },
+  '&[data-hidden="true"]': { display: 'none' },
+})
+export const tableAssetCellCss = css({
+  display: 'flex',
+  alignItems: 'center',
+  gap: '9px',
+  minWidth: 0,
+})
+export const tableTrendCellCss = css({ display: 'flex', alignItems: 'center' })
+
 export const cardCss = css({
   boxSizing: 'border-box',
   display: 'flex',

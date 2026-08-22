@@ -65,6 +65,12 @@ import {
   statusCss,
   statusDotCss,
   symbolCss,
+  tableAssetCellCss,
+  tableHeaderCss,
+  tableInnerCss,
+  tableRowCss,
+  tableTrendCellCss,
+  tableWrapCss,
   titleRowCss,
   titlesCss,
   toolbarCss,
@@ -78,6 +84,9 @@ const ALL_SYMBOLS: string[] = [...SYMBOLS]
 
 const ORDER_KEY = 'nocturne.rates.order.v1'
 const FAVS_KEY = 'nocturne.rates.favs.v1'
+const VIEW_KEY = 'nocturne.rates.view.v1'
+
+type ViewMode = 'cards' | 'table'
 
 const POLL_MS = 8000
 const POLL_SECONDS = 8
@@ -110,6 +119,8 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let rates: Record<string, { usd: number; btc: number }> | null = cache?.rates ?? null
   let fetchedAt: number | null = cache?.fetchedAt ?? null
   let history: Record<string, number[]> = cache?.history ?? {}
+
+  let view = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
 
   let filter = ''
   let sort: SortMode = 'custom'
@@ -208,6 +219,16 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     handle.update()
   }
 
+  function setView(mode: ViewMode) {
+    if (view === mode) return
+    // Only the view key is written here — filter/sort/pins/order are
+    // untouched setup-scope state, so switching views can never reset or
+    // rewrite them (AC-82).
+    view = mode
+    writeJSON(kv, VIEW_KEY, view)
+    handle.update()
+  }
+
   function applyReorder(dragged: string, target: string, position: 'before' | 'after') {
     order = reorder(order, dragged, target, position)
     writeJSON(kv, ORDER_KEY, order)
@@ -255,7 +276,22 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     )
   }
 
-  function renderCard(symbol: string, dim: boolean, query: string) {
+  function viewButton(mode: ViewMode, label: string) {
+    return (
+      <button
+        key={mode}
+        type="button"
+        data-testid={`view-toggle-${mode}`}
+        class="focus-ring"
+        aria-pressed={view === mode}
+        mix={[focusRingCss, segButtonCss, on('click', () => setView(mode))]}
+      >
+        {label}
+      </button>
+    )
+  }
+
+  function renderCard(symbol: string, dim: boolean, query: string, currentView: ViewMode) {
     let name = NAMES[symbol] ?? symbol
     let rate = rates?.[symbol]
     let hidden = !matches(symbol, query)
@@ -277,6 +313,163 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     let isDragged = dragSym === symbol
     let isDropTarget = overSym === symbol && !!dragSym && dragSym !== symbol
 
+    // One row/card per asset, shared across both views: the same leaf
+    // pieces (badge/titles/pin/handle/values/sparkline) with the identical
+    // data-testid/aria/event contract either way — only their grouping and
+    // the container's layout css differ, driven by `currentView`.
+    let badge = (
+      <span mix={badgeCss}>{symbol.slice(0, 3)}</span>
+    )
+    let titles = (
+      <span mix={titlesCss}>
+        <span mix={nameCss}>{name}</span>
+        <span mix={symbolCss}>{symbol}</span>
+      </span>
+    )
+    let pinButton = (
+      <button
+        type="button"
+        data-testid="pin-button"
+        class="focus-ring"
+        data-pinned={pinned ? 'true' : 'false'}
+        aria-label={`${pinned ? 'Unpin' : 'Pin'} ${name}`}
+        mix={[focusRingCss, pinButtonCss(pinned), on('click', () => togglePin(symbol))]}
+      >
+        ★
+      </button>
+    )
+    let dragHandle = (
+      <span
+        data-testid="drag-handle"
+        class="focus-ring"
+        role="button"
+        tabIndex={0}
+        aria-label={`Reorder ${name} (${symbol})`}
+        draggable={draggable}
+        mix={[
+          focusRingCss,
+          dragHandleCss(draggable),
+          on('dragstart', () => {
+            if (sort !== 'custom') return
+            dragSym = symbol
+            handle.update()
+          }),
+          on('dragend', () => {
+            dragSym = null
+            overSym = null
+            handle.update()
+          }),
+          on('keydown', (event) => {
+            if (sort !== 'custom') return
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+            event.preventDefault()
+            let index = order.indexOf(symbol)
+            if (event.key === 'ArrowUp') {
+              if (index <= 0) return
+              applyReorder(symbol, order[index - 1]!, 'before')
+            } else {
+              if (index === -1 || index >= order.length - 1) return
+              applyReorder(symbol, order[index + 1]!, 'after')
+            }
+          }),
+        ]}
+      >
+        ⠿
+      </span>
+    )
+    let usdValue = (
+      <span
+        data-testid="usd-value"
+        mix={usdValueCss}
+        style={{ color: dim ? 'var(--color-neutral-500)' : 'var(--color-text)' }}
+      >
+        {usdText}
+      </span>
+    )
+    let btcValue = (
+      <span data-testid="btc-value" mix={btcValueCss}>
+        {btcText}
+      </span>
+    )
+    let deltaValue = (
+      <span data-testid="delta-value" data-sign={deltaSign} style={{ color: deltaColor }}>
+        {deltaText}
+      </span>
+    )
+    let sparkline = renderSparkline(sparkPoints(historyForSymbol), deltaColor)
+
+    let containerStyle = {
+      // Handoff drag feedback: the dragged card/row drops to opacity .35;
+      // the hovered drop target fills with a translucent accent tint plus
+      // an inset accent edge.
+      opacity: isDragged ? 0.35 : undefined,
+      background: isDropTarget
+        ? 'color-mix(in srgb, var(--color-accent-500) 12%, var(--color-surface))'
+        : undefined,
+      boxShadow: isDropTarget ? 'inset 0 0 0 1px var(--color-accent-700)' : undefined,
+    }
+    let dragMixins = [
+      on<HTMLElement, 'dragenter'>('dragenter', (event) => {
+        if (sort !== 'custom' || !dragSym) return
+        event.preventDefault()
+        if (overSym !== symbol) {
+          overSym = symbol
+          handle.update()
+        }
+      }),
+      on<HTMLElement, 'dragover'>('dragover', (event) => {
+        if (sort !== 'custom' || !dragSym) return
+        event.preventDefault()
+        if (overSym !== symbol) {
+          overSym = symbol
+          handle.update()
+        }
+      }),
+      on<HTMLElement, 'dragleave'>('dragleave', (event) => {
+        if (overSym !== symbol) return
+        let related = event.relatedTarget as Node | null
+        if (related && event.currentTarget.contains(related)) return
+        overSym = null
+        handle.update()
+      }),
+      on<HTMLElement, 'drop'>('drop', (event) => {
+        if (sort !== 'custom' || !dragSym) return
+        event.preventDefault()
+        let dragged = dragSym
+        dragSym = null
+        overSym = null
+        if (dragged && dragged !== symbol) applyDrop(dragged, symbol)
+        else handle.update()
+      }),
+    ]
+
+    if (currentView === 'table') {
+      return (
+        <div
+          key={symbol}
+          data-testid="asset-card"
+          data-symbol={symbol}
+          data-name={name}
+          data-hidden={hidden ? 'true' : undefined}
+          data-dimmed={dim ? 'true' : undefined}
+          data-history-length={String(historyForSymbol.length)}
+          style={containerStyle}
+          mix={[tableRowCss, ...dragMixins]}
+        >
+          {dragHandle}
+          <span mix={tableAssetCellCss}>
+            {badge}
+            {titles}
+          </span>
+          {usdValue}
+          {btcValue}
+          {deltaValue}
+          <span mix={tableTrendCellCss}>{sparkline}</span>
+          {pinButton}
+        </div>
+      )
+    }
+
     return (
       <div
         key={symbol}
@@ -286,132 +479,27 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         data-hidden={hidden ? 'true' : undefined}
         data-dimmed={dim ? 'true' : undefined}
         data-history-length={String(historyForSymbol.length)}
-        style={{
-          // Handoff drag feedback: the dragged card drops to opacity .35;
-          // the hovered drop target fills with a translucent accent tint
-          // plus an inset accent edge.
-          opacity: isDragged ? 0.35 : undefined,
-          background: isDropTarget
-            ? 'color-mix(in srgb, var(--color-accent-500) 12%, var(--color-surface))'
-            : undefined,
-          boxShadow: isDropTarget ? 'inset 0 0 0 1px var(--color-accent-700)' : undefined,
-        }}
-        mix={[
-          cardCss,
-          on('dragenter', (event) => {
-            if (sort !== 'custom' || !dragSym) return
-            event.preventDefault()
-            if (overSym !== symbol) {
-              overSym = symbol
-              handle.update()
-            }
-          }),
-          on('dragover', (event) => {
-            if (sort !== 'custom' || !dragSym) return
-            event.preventDefault()
-            if (overSym !== symbol) {
-              overSym = symbol
-              handle.update()
-            }
-          }),
-          on('dragleave', (event) => {
-            if (overSym !== symbol) return
-            let related = event.relatedTarget as Node | null
-            if (related && event.currentTarget.contains(related)) return
-            overSym = null
-            handle.update()
-          }),
-          on('drop', (event) => {
-            if (sort !== 'custom' || !dragSym) return
-            event.preventDefault()
-            let dragged = dragSym
-            dragSym = null
-            overSym = null
-            if (dragged && dragged !== symbol) applyDrop(dragged, symbol)
-            else handle.update()
-          }),
-        ]}
+        style={containerStyle}
+        mix={[cardCss, ...dragMixins]}
       >
         <div mix={cardHeaderCss}>
-          <span mix={badgeCss}>{symbol.slice(0, 3)}</span>
-          <span mix={titlesCss}>
-            <span mix={nameCss}>{name}</span>
-            <span mix={symbolCss}>{symbol}</span>
-          </span>
-          <button
-            type="button"
-            data-testid="pin-button"
-            class="focus-ring"
-            data-pinned={pinned ? 'true' : 'false'}
-            aria-label={`${pinned ? 'Unpin' : 'Pin'} ${name}`}
-            mix={[
-              focusRingCss,
-              pinButtonCss(pinned),
-              on('click', () => togglePin(symbol)),
-            ]}
-          >
-            ★
-          </button>
-          <span
-            data-testid="drag-handle"
-            class="focus-ring"
-            role="button"
-            tabIndex={0}
-            aria-label={`Reorder ${name} (${symbol})`}
-            draggable={draggable}
-            mix={[
-              focusRingCss,
-              dragHandleCss(draggable),
-              on('dragstart', () => {
-                if (sort !== 'custom') return
-                dragSym = symbol
-                handle.update()
-              }),
-              on('dragend', () => {
-                dragSym = null
-                overSym = null
-                handle.update()
-              }),
-              on('keydown', (event) => {
-                if (sort !== 'custom') return
-                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-                event.preventDefault()
-                let index = order.indexOf(symbol)
-                if (event.key === 'ArrowUp') {
-                  if (index <= 0) return
-                  applyReorder(symbol, order[index - 1]!, 'before')
-                } else {
-                  if (index === -1 || index >= order.length - 1) return
-                  applyReorder(symbol, order[index + 1]!, 'after')
-                }
-              }),
-            ]}
-          >
-            ⠿
-          </span>
+          {badge}
+          {titles}
+          {pinButton}
+          {dragHandle}
         </div>
 
         <div mix={priceRowCss}>
           <span>
             <span mix={usdCaptionCss}>USD</span>
-            <span
-              data-testid="usd-value"
-              mix={usdValueCss}
-              style={{ color: dim ? 'var(--color-neutral-500)' : 'var(--color-text)' }}
-            >
-              {usdText}
-            </span>
+            {usdValue}
           </span>
-          {renderSparkline(sparkPoints(historyForSymbol), deltaColor)}
+          {sparkline}
         </div>
 
         <div mix={footerRowCss}>
-          <span data-testid="btc-value" mix={btcValueCss}>
-            {btcText}
-          </span>
-          <span data-testid="delta-value" data-sign={deltaSign} style={{ color: deltaColor }}>
-            {deltaText}
-          </span>
+          {btcValue}
+          {deltaValue}
         </div>
       </div>
     )
@@ -444,7 +532,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     let autoLabel = computeAutoLabel()
 
     return (
-      <div data-testid="rates-dashboard" mix={rootCss}>
+      <div data-testid="rates-dashboard" data-view={view} mix={rootCss}>
         <header mix={headerCss}>
           <div mix={titleRowCss}>
             <h4 mix={h4Css}>Exchange Rates</h4>
@@ -486,6 +574,11 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
             {sortButton('name', 'Name')}
             {sortButton('usd', 'Price')}
             {sortButton('delta', 'Change')}
+          </div>
+
+          <div role="group" aria-label="View" data-testid="view-toggle" mix={segCss}>
+            {viewButton('cards', 'Cards')}
+            {viewButton('table', 'Table')}
           </div>
 
           <button
@@ -566,7 +659,26 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
           {announce}
         </div>
 
-        <div mix={gridCss}>{sortedSymbols.map((symbol) => renderCard(symbol, dim, query))}</div>
+        {view === 'table' ? (
+          <div mix={tableWrapCss}>
+            <div mix={tableInnerCss}>
+              <div data-testid="table-header" mix={tableHeaderCss}>
+                <span aria-hidden="true" />
+                <span>Asset</span>
+                <span>USD</span>
+                <span>BTC</span>
+                <span>Session Δ</span>
+                <span>Trend</span>
+                <span aria-hidden="true" />
+              </div>
+              {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, view))}
+            </div>
+          </div>
+        ) : (
+          <div mix={gridCss}>
+            {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, view))}
+          </div>
+        )}
 
         {visibleCount === 0 && query && (
           <p data-testid="empty-state" mix={emptyStateCss}>
@@ -611,6 +723,10 @@ function randomTabId(): string {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isViewMode(value: unknown): value is ViewMode {
+  return value === 'cards' || value === 'table'
 }
 
 // Reuses cache.ts's own validator (isRatesCache) rather than a second,

@@ -446,3 +446,32 @@ Out of scope section above.
     negative, when `fetchRates()` maps the response, then every symbol's `btc` value is invalid
     (non-finite, rendering `—` via `format.ts`'s finiteness check) rather than a divide-by-zero
     or sign-flipped number, `usd` values are unaffected, and nothing throws.
+
+**View toggle: cards ⇄ table (user-requested scope addition, 2026-08-21).** The brief requires
+a card-based layout (the shipped default); `designs/README.md` specifies the dense table
+anatomy (header row + columnar grid). A toolbar view toggle reconciles both. Table-view
+*geometry* (column template `26px | minmax(150px,1.5fr) | minmax(96px,1fr) | minmax(96px,1fr)
+| 92px | 74px | 30px`, fading hairline under the header, row anatomy) is validated by visual
+QA per CONV-testing-4, not by component assertions.
+
+77. **AC-77 (component)** — Given a first visit (no persisted view value in `kv`), when the
+    dashboard renders, then the toolbar exposes a two-option view toggle (Cards · Table) with
+    an accessible name per option, and the card layout is active by default.
+78. **AC-78 (component)** — Given the user selects Table, when the list re-renders, then a
+    header row with the uppercase column labels Asset · USD · BTC · Session Δ · Trend is
+    present, each asset renders as one row (container marked `data-view="table"`), and every
+    row still carries the established `data-testid`/`data-*` contract (`asset-card`,
+    `usd-value`, pin, handle, …).
+79. **AC-79 (component)** — Given a view choice, when it is made, then it persists to
+    `nocturne.rates.view.v1` through the validating helper; a corrupt or unknown persisted
+    value falls back to cards without throwing.
+80. **AC-80 (component)** — Given table view with sort `"custom"`, when the user pins via the
+    row's pin button, drags a row onto another, or uses `ArrowUp`/`ArrowDown` on a row's
+    handle, then pin/reorder behavior is identical to cards view (same master-order semantics,
+    same persistence writes).
+81. **AC-81 (component)** — Given table view and filter text, when applied, then row
+    visibility, the match counter, and the empty state behave exactly as in cards view
+    (AC-30..32).
+82. **AC-82 (component)** — Given any combination of filter text, sort mode, pins, and a
+    custom order, when the user switches view in either direction, then all of that state is
+    preserved unchanged (no resets, no persistence writes other than the view key).
