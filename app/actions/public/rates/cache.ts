@@ -1,0 +1,60 @@
+// Last-known-good rates cache + staleness tiers (FR-11).
+
+import { type KVStore, readJSON, writeJSON } from './persisted.ts'
+import type { RatesMap } from './rate.ts'
+
+export type Staleness = 'live' | 'stale' | 'expired' | 'none'
+
+const LIVE_MS = 12_000
+const STALE_MS = 120_000
+
+export function staleness(fetchedAt: number | null, now: number): Staleness {
+  if (fetchedAt == null) return 'none'
+  let age = now - fetchedAt
+  if (age <= LIVE_MS) return 'live'
+  if (age <= STALE_MS) return 'stale'
+  return 'expired'
+}
+
+export interface RatesCache {
+  rates: RatesMap
+  fetchedAt: number
+  history: Record<string, number[]>
+}
+
+export const CACHE_KEY = 'nocturne.rates.cache.v1'
+
+export function isRatesCache(value: unknown): value is RatesCache | null {
+  if (value === null) return true
+  if (typeof value !== 'object') return false
+  let candidate = value as Partial<RatesCache>
+  return (
+    typeof candidate.rates === 'object' &&
+    candidate.rates !== null &&
+    typeof candidate.fetchedAt === 'number' &&
+    typeof candidate.history === 'object' &&
+    candidate.history !== null
+  )
+}
+
+export function readCache(kv: KVStore): RatesCache | null {
+  return readJSON<RatesCache | null>(kv, CACHE_KEY, null, isRatesCache)
+}
+
+export function writeCache(kv: KVStore, cache: RatesCache): void {
+  writeJSON(kv, CACHE_KEY, cache)
+}
+
+/**
+ * Parses a raw `storage`-event payload for `CACHE_KEY` with the same
+ * validator the mount-time read uses, so both adoption paths agree on what
+ * a valid cache looks like. Malformed JSON is treated like no update.
+ */
+export function parseCachePayload(raw: string): RatesCache | null {
+  try {
+    let value: unknown = JSON.parse(raw)
+    return isRatesCache(value) ? value : null
+  } catch {
+    return null
+  }
+}

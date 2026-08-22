@@ -1,7 +1,7 @@
 import type { Handle, RemixNode } from 'remix/ui'
 import { css } from 'remix/ui'
 
-import { entryHref, entryPreloads } from '../assets.ts'
+import { entryHref, entryPreloads, tokensHref } from '../assets.ts'
 
 export interface DocumentProps {
   children?: RemixNode
@@ -22,6 +22,7 @@ export function Document(handle: Handle<DocumentProps>) {
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <meta name="color-scheme" content="light dark" />
           <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+          <link rel="stylesheet" href={tokensHref} />
           <title>{title}</title>
           {head}
           {entryPreloads.map((href) => (
