@@ -41,6 +41,8 @@ describe('RatesDashboard: accessibility', () => {
       '[data-testid="auto-checkbox"]',
       '[data-testid="pin-button"]',
       '[data-testid="drag-handle"]',
+      '[data-testid="view-toggle-cards"]',
+      '[data-testid="view-toggle-table"]',
     ]
 
     for (let selector of selectors) {

@@ -8,7 +8,14 @@
 // passed directly by `remix/ui/test`'s `render(...)` without ever crossing
 // the `clientEntry` prop-serialization boundary.
 
-import { addEventListeners, clientEntry, on, type Handle } from 'remix/ui'
+import {
+  addEventListeners,
+  clientEntry,
+  on,
+  type ElementProps,
+  type Handle,
+  type MixinDescriptor,
+} from 'remix/ui'
 
 import { BUDGET_CAP, BUDGET_WINDOW_MS, createBudgetStore } from './budget.ts'
 import {
@@ -87,6 +94,35 @@ const FAVS_KEY = 'nocturne.rates.favs.v1'
 const VIEW_KEY = 'nocturne.rates.view.v1'
 
 type ViewMode = 'cards' | 'table'
+
+// The leaf pieces `renderCard` builds once per asset — shared, unmodified,
+// between whichever container branch (table row / card tile) assembles them,
+// so event wiring/data-testid/aria stay a single source of truth regardless
+// of `currentView`.
+interface CardLeaves {
+  badge: JSX.Element
+  titles: JSX.Element
+  pinButton: JSX.Element
+  dragHandle: JSX.Element
+  usdValue: JSX.Element
+  btcValue: JSX.Element
+  deltaValue: JSX.Element
+  sparkline: JSX.Element
+}
+
+interface CardAssembly extends CardLeaves {
+  symbol: string
+  name: string
+  hidden: boolean
+  dim: boolean
+  historyLength: number
+  containerStyle: {
+    opacity: number | undefined
+    background: string | undefined
+    boxShadow: string | undefined
+  }
+  dragMixins: ReadonlyArray<MixinDescriptor<HTMLElement, any, ElementProps>>
+}
 
 const POLL_MS = 8000
 const POLL_SECONDS = 8
@@ -258,37 +294,33 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     return `${remaining}s`
   }
 
-  function sortButton(mode: SortMode, label: string) {
+  // Shared segmented-control button shape used by both the sort and view
+  // toggles: `sortButton`/`viewButton` stay thin, domain-named adapters over
+  // this one markup/event-wiring definition.
+  function segButton(testId: string, label: string, pressed: boolean, onClick: () => void) {
     return (
       <button
-        key={mode}
+        key={testId}
         type="button"
-        data-testid={`sort-${mode}`}
+        data-testid={testId}
         class="focus-ring"
-        aria-pressed={sort === mode}
-        mix={[focusRingCss, segButtonCss, on('click', () => {
-          sort = mode
-          handle.update()
-        })]}
+        aria-pressed={pressed}
+        mix={[focusRingCss, segButtonCss, on('click', onClick)]}
       >
         {label}
       </button>
     )
   }
 
+  function sortButton(mode: SortMode, label: string) {
+    return segButton(`sort-${mode}`, label, sort === mode, () => {
+      sort = mode
+      handle.update()
+    })
+  }
+
   function viewButton(mode: ViewMode, label: string) {
-    return (
-      <button
-        key={mode}
-        type="button"
-        data-testid={`view-toggle-${mode}`}
-        class="focus-ring"
-        aria-pressed={view === mode}
-        mix={[focusRingCss, segButtonCss, on('click', () => setView(mode))]}
-      >
-        {label}
-      </button>
-    )
+    return segButton(`view-toggle-${mode}`, label, view === mode, () => setView(mode))
   }
 
   function renderCard(symbol: string, dim: boolean, query: string, currentView: ViewMode) {
@@ -443,66 +475,25 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       }),
     ]
 
-    if (currentView === 'table') {
-      return (
-        <div
-          key={symbol}
-          data-testid="asset-card"
-          data-symbol={symbol}
-          data-name={name}
-          data-hidden={hidden ? 'true' : undefined}
-          data-dimmed={dim ? 'true' : undefined}
-          data-history-length={String(historyForSymbol.length)}
-          style={containerStyle}
-          mix={[tableRowCss, ...dragMixins]}
-        >
-          {dragHandle}
-          <span mix={tableAssetCellCss}>
-            {badge}
-            {titles}
-          </span>
-          {usdValue}
-          {btcValue}
-          {deltaValue}
-          <span mix={tableTrendCellCss}>{sparkline}</span>
-          {pinButton}
-        </div>
-      )
+    let assembly: CardAssembly = {
+      symbol,
+      name,
+      hidden,
+      dim,
+      historyLength: historyForSymbol.length,
+      containerStyle,
+      dragMixins,
+      badge,
+      titles,
+      pinButton,
+      dragHandle,
+      usdValue,
+      btcValue,
+      deltaValue,
+      sparkline,
     }
 
-    return (
-      <div
-        key={symbol}
-        data-testid="asset-card"
-        data-symbol={symbol}
-        data-name={name}
-        data-hidden={hidden ? 'true' : undefined}
-        data-dimmed={dim ? 'true' : undefined}
-        data-history-length={String(historyForSymbol.length)}
-        style={containerStyle}
-        mix={[cardCss, ...dragMixins]}
-      >
-        <div mix={cardHeaderCss}>
-          {badge}
-          {titles}
-          {pinButton}
-          {dragHandle}
-        </div>
-
-        <div mix={priceRowCss}>
-          <span>
-            <span mix={usdCaptionCss}>USD</span>
-            {usdValue}
-          </span>
-          {sparkline}
-        </div>
-
-        <div mix={footerRowCss}>
-          {btcValue}
-          {deltaValue}
-        </div>
-      </div>
-    )
+    return currentView === 'table' ? renderTableRow(assembly) : renderCardTile(assembly)
   }
 
   return () => {
@@ -694,6 +685,71 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       </div>
     )
   }
+}
+
+// The two `renderCard` branch assemblies: same shared leaves (built once by
+// `renderCard`), different container element/grouping/layout css per view.
+function renderTableRow(card: CardAssembly) {
+  return (
+    <div
+      key={card.symbol}
+      data-testid="asset-card"
+      data-symbol={card.symbol}
+      data-name={card.name}
+      data-hidden={card.hidden ? 'true' : undefined}
+      data-dimmed={card.dim ? 'true' : undefined}
+      data-history-length={String(card.historyLength)}
+      style={card.containerStyle}
+      mix={[tableRowCss, ...card.dragMixins]}
+    >
+      {card.dragHandle}
+      <span mix={tableAssetCellCss}>
+        {card.badge}
+        {card.titles}
+      </span>
+      {card.usdValue}
+      {card.btcValue}
+      {card.deltaValue}
+      <span mix={tableTrendCellCss}>{card.sparkline}</span>
+      {card.pinButton}
+    </div>
+  )
+}
+
+function renderCardTile(card: CardAssembly) {
+  return (
+    <div
+      key={card.symbol}
+      data-testid="asset-card"
+      data-symbol={card.symbol}
+      data-name={card.name}
+      data-hidden={card.hidden ? 'true' : undefined}
+      data-dimmed={card.dim ? 'true' : undefined}
+      data-history-length={String(card.historyLength)}
+      style={card.containerStyle}
+      mix={[cardCss, ...card.dragMixins]}
+    >
+      <div mix={cardHeaderCss}>
+        {card.badge}
+        {card.titles}
+        {card.pinButton}
+        {card.dragHandle}
+      </div>
+
+      <div mix={priceRowCss}>
+        <span>
+          <span mix={usdCaptionCss}>USD</span>
+          {card.usdValue}
+        </span>
+        {card.sparkline}
+      </div>
+
+      <div mix={footerRowCss}>
+        {card.btcValue}
+        {card.deltaValue}
+      </div>
+    </div>
+  )
 }
 
 export const RatesDashboardEntry = clientEntry(import.meta.url, function RatesDashboardEntry(
