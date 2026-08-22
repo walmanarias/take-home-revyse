@@ -1,129 +1,149 @@
 # Crypto Dashboard
 
 A single-route Remix 3 dashboard (`/`) listing 15 curated cryptocurrencies with live USD and BTC
-rates from Coinbase's public exchange-rates endpoint. See `specs/crypto-dashboard.spec.md` for
-the full functional contract and `docs/design/crypto-dashboard.md` plus `docs/adr/` for the
-system design and key decisions.
+rates from Coinbase's public exchange-rates endpoint. Filter, sort, pin favourites, drag (or
+arrow-key) rows into a persisted custom order, switch between a card grid and a dense table, and
+always see exactly how fresh the numbers are. The app shares one 10-requests-per-minute budget
+across every open tab and never shows an error page.
 
-## App Shape
+- Full functional contract: `specs/crypto-dashboard.spec.md` (AC-1..103)
+- System design + decisions: `docs/design/crypto-dashboard.md`, `docs/adr/0001`–`0007`
+- Original handoff + prototype + Nocturne design system: `designs/`
 
-- `app/actions/controller.tsx` owns the top-level route actions.
-- `app/actions/home-page.tsx` and `app/actions/document.tsx` render the route-owned server chrome.
-- `app/actions/public/entry.ts` is the generic browser hydration entry.
-- `app/actions/public/rates/` is the whole crypto-dashboard feature tree: the `RatesDashboard`
-  client-hydrated component plus its pure budget/lease/cache/order/sort/format/persisted modules,
-  `currencies.ts` (the curated symbol list), `coinbase.ts` (the one network adapter), and
-  `tokens.css` (Nocturne design tokens, ADR 0002).
-- `app/routes.ts` defines the shared route contract used by server and browser modules for
-  type-safe hrefs.
-- `app/router.ts` wires routes to handlers.
-- `app/middleware/render.tsx` installs the request-scoped renderer used by actions.
-- `app/assets.ts` owns the server-side asset pipeline used by the asset route and renderer.
-- Root `public/` contains static files served unchanged from the app root.
+## Setup
 
-## Commands
+Requires **Node ≥ 24.3.0** (TypeScript runs natively via `--import remix/node-tsx`; there is no
+build step). No environment variables, API keys, or backend — Coinbase's endpoint is public and
+all state is browser-local (`localStorage`).
 
 ```sh
-npm i
-npm run dev
-npm run hmr
-npm run start
-npm test
-npm run typecheck
+npm install
+npm run dev          # http://localhost:44100 (restarts on change)
+npm run hmr          # same port, behind the HMR proxy (server + browser hot reload)
+npm run start        # production mode
+npm test             # 117 tests: unit + router + Chromium component + 1 E2E (remix test)
+npm run typecheck    # tsc --noEmit
 ```
+
+`npm test` runs Remix's own `remix test` CLI; the first run downloads a Chromium build via the
+`playwright` devDependency. Run a single file (or glob) with
+`NODE_ENV=test npx remix test path/to/file.test.ts`. Don't use raw `node --test` — it reports
+the file as one passing test without executing its `remix/test` suite bodies.
+
+### Where things live
+
+- `app/actions/public/rates/` — the whole feature: the client-hydrated `RatesDashboard`
+  component plus small pure modules (`coinbase`, `budget`, `lease`, `cache`, `order`,
+  `order-store`, `sort`, `format`, `history`, `window`, `search-index`, `persisted`),
+  `currencies.ts` (the curated list), `tokens.css` / `styles.ts` (Nocturne tokens).
+- `app/actions/controller.tsx`, `home-page.tsx`, `document.tsx` — the server-rendered route chrome.
+- `app/routes.ts` / `app/router.ts` / `app/middleware/render.tsx` / `app/assets.ts` — routing,
+  the request-scoped renderer, and the browser asset pipeline (unchanged scaffold).
+- `test/` — shared fakes (injected clock, `KVStore`, `fetch`, `LocksPort`) and the README test.
+
+## Decisions & trade-offs
+
+- **Remix 3, not React.** The handoff was written for Remix + React + shadcn/Tailwind/dnd-kit,
+  but this repo is a Remix 3 scaffold, and switching stacks was explicitly off the table. The
+  design's *intent* — layout, copy, tokens, and the budget/lease/staleness/reorder algorithms —
+  was ported into Remix 3 idioms (setup-scope state, explicit `handle.update()`, no hooks).
+  (ADR 0001)
+- **Tokens as a CSS asset, styling via `css()` descriptors.** Nocturne's `:root` variables ship
+  verbatim in `tokens.css`; every component style references `var(--color-*)`, never a literal
+  hex. Two semantic tokens (`--color-negative`, `--color-warning`) were added rather than
+  inlining values. (ADR 0002)
+- **Native HTML5 drag-and-drop + a keyboard path, no DnD library.** Both paths call the same
+  pure `reorder()`, so keyboard users get identical semantics and the reorder logic is tested
+  without a DOM. Trade-off: native HTML5 DnD is mouse-only — touch-screen users have the keyboard path, not drag. (ADR 0003)
+- **Remix-native testing only.** Unit tests inject a clock, a `KVStore`, `fetch`, and a
+  `LocksPort` — no real timers, network, `localStorage`, or `navigator.locks`. Component tests
+  run in real Chromium; one E2E test guards SSR↔hydration parity. Finding along the way: the
+  scaffold's `node --test` script silently skipped `remix/test` suite bodies, so `npm test` was
+  switched to the real `remix test` runner. (ADR 0004)
+- **Server renders the chrome; one client component owns all IO.** The cold-start page (15 rows
+  of `—`) renders with zero network calls and zero storage reads, so the first hydrated render
+  matches SSR exactly; persisted view/scope/cache are adopted in one post-mount update. (ADR 0005)
+- **Session-scoped Δ / sparkline, no invented history.** The rates endpoint has no history, so
+  the change column and sparkline are built from samples taken this session rather than a
+  synthesised 24h series. They start flat and grow honestly.
+- **No error page, anywhere.** Every failure mode degrades in place: last-known-good values with
+  an explicit age, or chrome with placeholders and a plain "retrying every 8s" message.
 
 ## Tension Decisions
 
-Adapted from `designs/README.md`'s handoff (written for a Remix + React + shadcn stack) to this
-repository's actual Remix 3 implementation. All five tensions (T1–T5) are implemented; see ADR
-0006 (T2) and ADR 0007 (T3) for the scope-toggle/windowing and versioned-order design decisions
-added in a later pass.
+The handoff posed five design tensions and asked for two to be implemented, the rest decided.
+**T1 (freshness vs. rate limits) and T4 (resilience vs. simplicity) were the two chosen** — they
+are the product's core promise (never exceed the shared budget; never show an error page). T5 was
+small enough to include in the same pass, and T2 and T3 were implemented in a follow-up pass
+(ADR 0006, ADR 0007), so all five are live today. Each entry below records the choice and what it
+gives up.
 
-### T1 — Freshness vs. rate limits — IMPLEMENTED
+### T1 — Freshness vs. rate limits — IMPLEMENTED (chosen)
 
-**Choice.** One shared **leaky-bucket budget** in `localStorage` (`budget.ts`, capacity 10,
-refilling continuously at 10/minute) plus a **single-poller lease** (`lease.ts`). Every tab writes
-a heartbeat claim to `nocturne.rates.lease.v1`; the holder is the only tab that fetches, on an 8s
-period (7.5 req/min, comfortably inside the 12s freshness bar with ~2.5 req/min of headroom).
-Other tabs adopt results for free via the native `storage` event, so N tabs cost the same as one.
-If the leader closes or freezes, another tab takes the lease once the holder has been silent past
-`LEASE_TTL = 2500ms`. Manual refresh spends from the same bucket; when it's empty the button
-becomes "Wait Ns" and says why. The ten pips make the budget visible so throttling never feels
-like a bug.
+**Choice.** One shared **leaky-bucket budget** in `localStorage` (`budget.ts`: capacity 10,
+continuous refill at 10/minute) plus a **single-poller lease** (`lease.ts`). Every tab writes a
+heartbeat claim; only the holder fetches, on an 8s period (7.5 req/min, inside the 12s freshness
+bar with headroom). Other tabs adopt results free via the native `storage` event, so N tabs cost
+the same as one. If the leader closes or freezes, another tab takes over after
+`LEASE_TTL = 2500ms` of silence. Manual refresh spends from the same bucket; when it is empty the
+button reads "Wait Ns" and says why, and ten pips keep the budget visible so throttling never
+looks like a bug.
 
-**Given up.** `localStorage` reads/writes are not truly atomic, so two tabs claiming a token in
-the same millisecond can both win — the bucket can overdraw by ~1 in a rare race (AC-7 documents
-this explicitly). Accepted because the cap is a soft budget with headroom; a `BroadcastChannel` +
-`navigator.locks` upgrade (or a SharedWorker) closes it, and in production the right answer is a
-server-side proxy that owns the key and the quota.
+**Given up.** `localStorage` writes are not atomic, so two tabs claiming a token in the same
+millisecond can both win — the bucket can overdraw by ~1 in a rare race (documented in AC-7).
+Accepted because the cap is a soft budget with headroom; the real fix is a server-side proxy that
+owns the key and the quota.
 
 ### T2 — Scale vs. interactivity — IMPLEMENTED
 
-**Choice.** A toolbar scope toggle ("Curated 15" · "All") reveals every symbol in the
-already-fetched Coinbase response — zero new requests, since `coinbase.ts` already mapped every
-returned symbol, not just the curated 15 (T1's budget stays untouched by construction). Uncurated
-symbols show their own code as their display name (`currencies.ts`'s `displayNameFor`), and fiat
-currencies are included, not filtered — the endpoint carries no metadata to filter by, and a
-hand-curated names/denylist would drift out of sync with Coinbase's own list the moment it
-changed. Filtering runs against a lowercased index built once per symbol-universe change
-(`search-index.ts`), not recomputed per keystroke per row. "All" scope's list is windowed
-(`window.ts`'s pure `computeWindow`): rows are a fixed height, so the rendered slice is pure
-arithmetic over `scrollTop`/`viewportHeight` — at most a few dozen rows are ever in the DOM
-regardless of universe size — with a `dragover`-driven edge auto-scroll so a drop target outside
-the rendered slice stays reachable.
+**Choice.** A "Curated 15 · All" scope toggle reveals every symbol in the response the leader tab
+already fetched — zero extra requests, so T1's budget is untouched by construction. Filtering runs
+against a lowercased index built once per symbol universe (`search-index.ts`). "All" scope is
+**windowed** (`window.ts`): rows are fixed-height, so the rendered slice is pure arithmetic over
+`scrollTop`, at most a few dozen rows are in the DOM at once, and drag auto-scrolls at the edges so
+off-screen drop targets stay reachable. Session history is bounded to curated ∪ pinned symbols.
 
-**Given up.** Dragging is still only offered for the curated 15 plus pinned symbols, not the full
-"All" universe — a "move to top" affordance for the rest remains unbuilt. Uncurated symbols show
-their own code as their name (no names endpoint reachable without spending a budget token) and
-carry no session Δ/trend (flat sparkline, `—`) unless pinned. Fiat currencies are included, not
-filtered — the endpoint carries no type metadata to filter by. Cards/grid view is not
-virtualized; "All" scope is table-view only.
+**Given up.** "All" scope is table-view only (the card grid is not virtualized); uncurated symbols
+show their ticker as their name (no names endpoint without spending budget) and carry no Δ/trend
+unless pinned; fiat currencies are included because the endpoint has no type metadata and a
+hand-maintained denylist would drift; dragging stays limited to curated ∪ pinned rows.
 
 ### T3 — Instant feel vs. durable order — IMPLEMENTED
 
-**Choice.** Optimistic local reorder (state updates on drop or keyboard move, before any write)
-with the write persisted to a versioned record, `nocturne.rates.order.v2`
-(`order-store.ts`'s `{ schemaVersion, updatedAt, order }`), so the visible reorder is still
-instant. The durable write is serialized through `navigator.locks.request()` when available
-(guarded for SSR and browsers without the Web Locks API, degrading to today's unlocked write, no
-crash either way); inside the lock, a write only commits when its `updatedAt` is strictly greater
-than what's currently stored — a deterministic last-write-wins outcome rather than an unordered
-race between two independent `getItem`/`setItem` calls, with a tie favoring the value already in
-storage. A `storage`-event listener adopts a newer `order.v2` record from another tab the same
-way, without ever fetching. Legacy `nocturne.rates.order.v1` is migrated from once (never
-deleted, for rollback safety) and validated on read exactly as before (unknown symbols dropped,
-missing ones appended).
+**Choice.** Reorders update the UI optimistically in the drop/keydown handler, then persist to a
+versioned `nocturne.rates.order.v2` record (`order-store.ts`: `{ schemaVersion, updatedAt, order }`).
+The write runs under `navigator.locks.request()` where available and commits only if its
+`updatedAt` is strictly newer than what is stored — deterministic last-write-wins instead of an
+unordered `getItem`/`setItem` race. A `storage` listener adopts a newer record from another tab
+without fetching; a losing tab resyncs to the stored order. The legacy `order.v1` key is migrated
+once and kept for rollback.
 
-**Given up.** The lock makes the last-write-wins outcome deterministic, not a merge — a genuine
-same-instant collision across two tabs still discards one tab's intended order rather than
-combining both. `favs` deliberately keeps the simpler, unlocked scheme; losing a pin race is
-cheap to notice and redo, unlike losing a multi-step reorder.
+**Given up.** Deterministic, not merged — a genuine same-instant collision still discards one
+tab's intent (true convergence needs a server-side order or a CRDT, the wrong weight for a
+client-only app). Browsers without Web Locks degrade to the unlocked write. `favs` deliberately
+keeps the simpler unlocked scheme; losing a pin race is cheap to notice and redo.
 
-### T4 — Resilience vs. simplicity — IMPLEMENTED
+### T4 — Resilience vs. simplicity — IMPLEMENTED (chosen)
 
 **Choice.** No error page, ever. Every successful response is written to a last-known-good cache
 (`cache.ts`) that renders before the first fetch resolves, so a returning user sees numbers
-immediately. Staleness is tiered, and the tier is always on screen (dot + label + banner):
-`≤12s` **live** (accent) · `≤120s` **stale** (amber, values still trusted) · `>120s` **expired**
-(red, numeric values dim to `--color-neutral-500`, banner explains that these are no longer
-prices). A first-time visitor with no cache sees the full chrome, `—` in every cell, and
-"Fetching first rates…"; if the feed is unreachable they get an explicit "no cached rates on this
-device yet… retrying every 8s" — blank rather than a guess.
+immediately. Staleness is tiered and always on screen (dot + label + banner): **live** ≤12s ·
+**stale** ≤120s (amber, still trusted) · **expired** >120s (red, values dimmed, banner explains
+these are no longer prices). A first-time visitor with no cache sees the full chrome with `—` in
+every cell and "Fetching first rates…"; if the feed is unreachable they get an explicit
+"no cached rates on this device yet… retrying every 8s" — blank rather than a guess.
 
-**Given up.** Complexity: three staleness tiers, a cache-shape version key, and a "dim the
-numbers" state to test. Also honesty over comfort — an expired dashboard looks visibly degraded,
-which is uglier than showing confident stale numbers, and deliberately so.
+**Given up.** Complexity — three tiers, a versioned cache key, and a dimmed state to test — and
+comfort: an expired dashboard looks visibly degraded on purpose, rather than showing confident
+stale numbers.
 
 ### T5 — Filtering × reordering semantics — IMPLEMENTED
 
-**Choice.** Drag works with a filter active. Reordering happens on the **master order**, not the
-visible slice: the dragged symbol is removed and re-inserted **adjacent to the drop target**
-(after it when moving down, before it when moving up — the same pure `reorder()` function used by
-both the native HTML5 drag path and the keyboard `ArrowUp`/`ArrowDown` path). Hidden rows are
-never touched, so each keeps the visible neighbour it sits behind. Clear the filter and the moved
-card is exactly where you'd predict; everything else is untouched. Drag is disabled under
-Name/Price/Change sorts for the same reason: a computed order has no slots, so a drop would
-either be discarded or would silently switch the user back to custom.
+**Choice.** Dragging works with a filter active and edits the **master order**, not the visible
+slice: the dragged symbol is re-inserted adjacent to the drop target (after it moving down, before
+it moving up), and hidden rows are never touched. Clear the filter and the moved card is exactly
+where you'd predict. Drag is disabled under Name/Price/Change sorts because a computed order has
+no slots to drop into.
 
-**Given up.** You cannot use the filter to move a card *between* two hidden neighbours in one
-gesture — it lands next to a visible card. Rare; recoverable by clearing the filter.
+**Given up.** You cannot use a filter to place a card *between* two hidden neighbours in one
+gesture — it lands next to a visible one. Rare, and recoverable by clearing the filter.
