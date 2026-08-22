@@ -599,3 +599,34 @@ files through Playwright — the Out of scope "no E2E" entry is amended accordin
     option is visibly distinct from an enabled inactive segmented button (the segmented
     control's `:disabled` treatment matches the Refresh button's: reduced opacity,
     `not-allowed` cursor).
+
+**Sub-$0.0001 price precision (defect found in post-implementation visual QA, 2026-08-22).**
+AC-56's `< 1 → 4dp` tier was specified against the curated 15, whose cheapest asset (ADA,
+~$0.22) never approaches the tier's own precision floor. In "All" scope (ADR 0006) the same
+tier renders the ~16 Coinbase symbols priced below $0.0001 — SHIB, PEPE, BONK, FLOKI, MOG and
+others — as an identical, information-free `$0.0000`. AC-104 adds a significant-digits tier
+below AC-56's range; AC-52..AC-56 are unchanged.
+
+104. **AC-104 (unit)** — Given `0 < usd < 0.0001`, when `formatUsd(usd)` runs, then the value
+    renders at 4 significant digits capped at 8 decimal places (`formatUsd(0.00000551) ===
+    "$0.00000551"`, `formatUsd(0.00000012) === "$0.00000012"`), never `"$0.0000"`; given a
+    value too small to render at 8dp (`usd < 0.000000005`, e.g. OOKI at ~3.9e-12), then it
+    renders the bounded placeholder `"< $0.00000001"` rather than a false zero or an
+    unbounded-width decimal; `usd === 0` and the AC-52..AC-56 tiers are unaffected.
+
+**Sub-satoshi BTC cross-rates (same defect class as AC-104, 2026-08-22).** `formatBtc` trims
+trailing zeros off its 8dp rendering, so any cross-rate below one satoshi collapsed to a literal
+`0 ₿` — a stronger and more misleading claim than the USD tier's `$0.0000`, since it asserts the
+asset is worth exactly zero bitcoin. Every sub-cent "All"-scope asset hit this.
+
+105. **AC-105 (E2E)** — Given a hydrated dashboard whose conditional top-level slots turn on
+    after the first render (the staleness banner once the cached data is expired; the filter
+    notice once a query hides rows), then each slot renders at its authored position — above
+    the list region — and never after the footnote. Conditional slots are guarded by strict
+    booleans, never by a possibly-empty string: `{query && …}` renders `''` as a real text node
+    rather than nothing, which perturbs `diff-dom.ts`'s positional pairing of unkeyed siblings
+    and displaces a later-appearing slot.
+106. **AC-106 (unit)** — Given `0 < btc < 0.000000005` (a sub-satoshi cross-rate, e.g. SHIB
+    against BTC at ~7.1e-11), then `formatBtc` renders `"< 0.00000001 ₿"` rather than a false
+    `"0 ₿"`; `formatBtc(0.00000001) === "0.00000001 ₿"` still renders exactly, and an exact
+    `btc === 0` still renders `"0 ₿"`.

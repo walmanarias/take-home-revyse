@@ -64,6 +64,14 @@ Two traps specific to this tree:
   flight — must be read live (guard in the root, or pass a predicate like `isDragActive()`), not
   captured as a boolean prop. A drag that starts and drops in one turn will otherwise see stale
   props and silently do nothing.
+- **Conditional slots need boolean guards.** `{query && <p/>}` renders `''` as a real text
+  node, not nothing, and the sibling diff pairs unkeyed siblings positionally — so a slot that
+  turns on later (banner, filter notice) gets inserted in the wrong place, typically below the
+  footnote. Use `{query !== '' && …}`. Presence-based tests can't see this; assert sibling order
+  at the E2E/hydration layer.
+- **Formatters need a precision floor.** A fixed-decimal tier renders sub-resolution values as a
+  false zero (`$0.0000`, `0 ₿`). Curated-15 prices never reach the floor; "All" scope's ~640
+  symbols do. See `format.ts`'s `MIN_RENDERABLE_*` constants.
 - **Row height is a shared invariant.** The windowed list's spacer arithmetic assumes every table
   row is exactly `TABLE_ROW_HEIGHT_PX` (`styles.ts`) tall, which is why that constant both sizes
   the row in CSS and feeds `computeWindow`. If the two ever drift, the spacers mis-state the

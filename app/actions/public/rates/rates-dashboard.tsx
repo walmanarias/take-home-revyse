@@ -485,6 +485,15 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     updateIfWindowMoved()
   }
 
+  // AC-105: every conditional slot below is guarded by a strict boolean, never
+  // by a possibly-empty string. `{query && <p/>}` renders the *string* `''`
+  // when the filter is empty — a real text node in the child list, not
+  // "nothing" — and `diff-dom.ts` pairs unkeyed siblings positionally among
+  // whatever it could not key-match. That stray text node shifts the pairing,
+  // so a slot turning on later (the staleness banner, the filter notice) gets
+  // inserted after the footnote instead of above the list. Attribute-level
+  // tests never caught it because the node does exist — just in the wrong
+  // place (CONV-testing-4).
   return () => {
     if (!started) {
       started = true
@@ -568,13 +577,13 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
 
         {renderBudgetStrip(budget, isLeaderNow)}
 
-        {bannerText && (
+        {bannerText !== null && (
           <div data-testid="banner" mix={bannerCss}>
             {bannerText}
           </div>
         )}
 
-        {query && hiddenCount > 0 && (
+        {query !== '' && hiddenCount > 0 && (
           <p data-testid="filter-notice" mix={noticeCss}>
             {`Filtered view — dragging reorders within what you see; the ${hiddenCount} hidden cards keep the neighbour they follow.`}
           </p>
@@ -601,7 +610,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
           renderPlainTable(sortedSymbols.map(renderRow))
         )}
 
-        {visibleCount === 0 && query && (
+        {visibleCount === 0 && query !== '' && (
           <p data-testid="empty-state" mix={emptyStateCss}>
             {`Nothing matches "${filter}".`}
           </p>

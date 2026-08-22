@@ -54,6 +54,18 @@
   every drop a silent no-op.
 - From: crypto-dashboard (module-split refactor), 2026-08-22.
 
+### CONV-structure-5: Guard conditional JSX slots with strict booleans, never a possibly-empty string
+- Why: `{query && <p/>}` does not render "nothing" when `query` is `''` — it renders the empty
+  string as a real text node in the parent's child list. `diff-dom.ts` key-matches siblings on
+  `data-key` and pairs everything else *positionally* among the units it could not match, so a
+  stray text node shifts that pairing and a slot that turns on later is inserted at the wrong
+  position entirely. Write `{query !== '' && …}`, `{text !== null && …}`, or `{Boolean(x) && …}`.
+- Example: the staleness banner and the filter notice both rendered *below the footnote* instead
+  of above the list. Only reproducible on the real hydration path (SSR boundary markers change
+  the sibling-unit set), and invisible to every existing assertion because the node did exist —
+  just in the wrong place. Caught by visual QA, pinned by AC-105.
+- From: crypto-dashboard (compliance pass, `rates-dashboard.tsx`), 2026-08-22.
+
 ## Testing
 
 ### CONV-testing-1: Real-DOM/browser component tests use the `*.test.browser.tsx` suffix, run via `remix test`
@@ -145,6 +157,19 @@
   by review, closed via spec Amendment AC-76 (see CONV-process-2).
 - From: crypto-dashboard (review finding — unvalidated BTC divisor, `coinbase.ts`, AC-76),
   2026-08-21.
+
+### CONV-api-2: Every numeric formatter needs an explicit precision floor
+- Why: a fixed-decimal tier silently turns any value below its own resolution into a *false
+  zero*. `$0.0000` and especially `0 ₿` read as real quantities, not as "too small to show" —
+  and unlike a divide-by-zero (CONV-api-1) nothing throws, so only a human looking at the
+  rendered value ever notices. Decide what the smallest representable value is, and render
+  anything below it as an explicit bounded placeholder (`< $0.00000001`).
+- Example: AC-56's `< 1 → 4dp` tier was specified against the curated 15 (cheapest ~$0.22). In
+  "All" scope it rendered ~16 real Coinbase assets — SHIB, PEPE, BONK, FLOKI — as an identical
+  `$0.0000`, and their BTC cross-rates as `0 ₿`. Fixed by AC-104/AC-106.
+- Corollary: when a formatting tier is specified against a curated sample, re-check it against
+  the widest input set the feature can actually reach before shipping.
+- From: crypto-dashboard (compliance pass, `format.ts`), 2026-08-22.
 
 ## Process / Workflow
 
