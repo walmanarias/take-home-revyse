@@ -43,3 +43,11 @@ export const DISPLAY_NAMES: Record<Symbol, string> = {
   XLM: 'Stellar',
   AAVE: 'Aave',
 }
+
+// ADR 0006 (T2, "All" scope): every symbol Coinbase returns beyond the
+// curated 15 has no human name available without spending a budget token —
+// symbol-as-name is the honest default rather than a hand-curated map that
+// would silently drift out of sync with Coinbase's own currency list.
+export function displayNameFor(symbol: string): string {
+  return (DISPLAY_NAMES as Record<string, string>)[symbol] ?? symbol
+}

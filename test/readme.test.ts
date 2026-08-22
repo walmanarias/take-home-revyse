@@ -16,15 +16,17 @@ describe('README.md: Tension Decisions', () => {
     }
   })
 
-  it('AC-75 marks T1, T4, T5 as implemented and T2, T3 as decided-only', () => {
+  it('AC-75 marks all five tensions (T1-T5) as implemented (amended 2026-08-21 with T2/T3, AC-83..96)', () => {
     let readme = fs.readFileSync(README_PATH, 'utf8')
     let sections = splitSections(readme)
 
-    for (let id of ['T1', 'T4', 'T5']) {
-      assert.match(sections[id] ?? '', /IMPLEMENTED/i)
-    }
-    for (let id of ['T2', 'T3']) {
-      assert.match(sections[id] ?? '', /decided.*not implemented/i)
+    for (let id of ['T1', 'T2', 'T3', 'T4', 'T5']) {
+      // Case-sensitive: the literal uppercase "IMPLEMENTED" marker is the
+      // convention this repo uses (see T1/T4/T5 today). A case-insensitive
+      // match would be a false positive here — T2/T3's still-current
+      // "decided, not implemented" text contains the substring "implemented"
+      // (lowercase) and would otherwise incorrectly satisfy this assertion.
+      assert.match(sections[id] ?? '', /IMPLEMENTED\b/)
     }
   })
 })

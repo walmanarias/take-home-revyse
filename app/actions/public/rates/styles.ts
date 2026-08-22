@@ -197,6 +197,16 @@ export const tableInnerCss = css({
   display: 'flex',
   flexDirection: 'column',
 })
+// All-scope windowed table body (ADR 0006, T2): a fixed-height scroll
+// viewport (tests may override `.style.height`) so `computeWindow` has a
+// stable viewport to measure against; scrolls both axes since the inner
+// content still carries the 660px table minimum width.
+export const tableViewportCss = css({
+  height: '480px',
+  overflowX: 'auto',
+  overflowY: 'auto',
+  position: 'relative',
+})
 export const tableHeaderCss = css({
   boxSizing: 'border-box',
   display: 'grid',

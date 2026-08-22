@@ -35,8 +35,9 @@ npm run typecheck
 ## Tension Decisions
 
 Adapted from `designs/README.md`'s handoff (written for a Remix + React + shadcn stack) to this
-repository's actual Remix 3 implementation. T1, T4, and T5 are implemented as part of this
-feature; T2 and T3 are decided design directions, not built in this pass.
+repository's actual Remix 3 implementation. All five tensions (T1–T5) are implemented; see ADR
+0006 (T2) and ADR 0007 (T3) for the scope-toggle/windowing and versioned-order design decisions
+added in a later pass.
 
 ### T1 — Freshness vs. rate limits — IMPLEMENTED
 
@@ -56,39 +57,47 @@ this explicitly). Accepted because the cap is a soft budget with headroom; a `Br
 `navigator.locks` upgrade (or a SharedWorker) closes it, and in production the right answer is a
 server-side proxy that owns the key and the quota.
 
-### T2 — Scale vs. interactivity — decided, not implemented
+### T2 — Scale vs. interactivity — IMPLEMENTED
 
-**Status:** decided, not implemented.
+**Choice.** A toolbar scope toggle ("Curated 15" · "All") reveals every symbol in the
+already-fetched Coinbase response — zero new requests, since `coinbase.ts` already mapped every
+returned symbol, not just the curated 15 (T1's budget stays untouched by construction). Uncurated
+symbols show their own code as their display name (`currencies.ts`'s `displayNameFor`), and fiat
+currencies are included, not filtered — the endpoint carries no metadata to filter by, and a
+hand-curated names/denylist would drift out of sync with Coinbase's own list the moment it
+changed. Filtering runs against a lowercased index built once per symbol-universe change
+(`search-index.ts`), not recomputed per keystroke per row. "All" scope's list is windowed
+(`window.ts`'s pure `computeWindow`): rows are a fixed height, so the rendered slice is pure
+arithmetic over `scrollTop`/`viewportHeight` — at most a few dozen rows are ever in the DOM
+regardless of universe size — with a `dragover`-driven edge auto-scroll so a drop target outside
+the rendered slice stays reachable.
 
-**Choice.** Curate 15 assets by default and, for a hypothetical full 500+ list, virtualise
-rendering over the filtered array (windowed rendering, no library available in Remix 3's
-ecosystem — this would be hand-rolled), keep filtering off the interaction path, memoise cards on
-their own values, and restrict the drag interaction to the rendered window plus edge auto-scroll.
-Cards would stay fixed-height so the virtualiser needs no measurement.
+**Given up.** Dragging is still only offered for the curated 15 plus pinned symbols, not the full
+"All" universe — a "move to top" affordance for the rest remains unbuilt. Uncurated symbols show
+their own code as their name (no names endpoint reachable without spending a budget token) and
+carry no session Δ/trend (flat sparkline, `—`) unless pinned. Fiat currencies are included, not
+filtered — the endpoint carries no type metadata to filter by. Cards/grid view is not
+virtualized; "All" scope is table-view only.
 
-**Given up.** Dragging across a 500-card list is slow by hand, so the honest fix is a "move to
-top / move to position" affordance rather than more DnD polish; virtualisation also breaks native
-find-in-page and complicates the fading divider rules. Not implemented because 15 cards is the
-real product for this pass, and virtualisation adds machinery the current design doesn't need.
-
-### T3 — Instant feel vs. durable order — decided, not implemented
-
-**Status:** decided, not implemented.
+### T3 — Instant feel vs. durable order — IMPLEMENTED
 
 **Choice.** Optimistic local reorder (state updates on drop or keyboard move, before any write)
-with the write happening synchronously in the same handler (`order.ts`'s `reorder()` plus
-`persisted.ts`'s `writeJSON`), so a reload immediately after a drop can't lose it. For durability
-across tabs the plan is a versioned record — `{ version, updatedAt, order }` — written under
-`navigator.locks.request()` with last-write-wins on `updatedAt`, a `storage`-event listener
-adopting a newer version, and validation on read (unknown symbols dropped, missing ones appended,
-already implemented today via `readOrder()`).
+with the write persisted to a versioned record, `nocturne.rates.order.v2`
+(`order-store.ts`'s `{ schemaVersion, updatedAt, order }`), so the visible reorder is still
+instant. The durable write is serialized through `navigator.locks.request()` when available
+(guarded for SSR and browsers without the Web Locks API, degrading to today's unlocked write, no
+crash either way); inside the lock, a write only commits when its `updatedAt` is strictly greater
+than what's currently stored — a deterministic last-write-wins outcome rather than an unordered
+race between two independent `getItem`/`setItem` calls, with a tie favoring the value already in
+storage. A `storage`-event listener adopts a newer `order.v2` record from another tab the same
+way, without ever fetching. Legacy `nocturne.rates.order.v1` is migrated from once (never
+deleted, for rollback safety) and validated on read exactly as before (unknown symbols dropped,
+missing ones appended).
 
-**Implemented today:** the optimistic update plus the synchronous validated write — order
-survives an instant reload. **Not implemented:** the lock and version fields, so two tabs
-reordering at the same instant settle on whichever wrote last rather than merging.
-
-**Given up.** True convergence needs a server-side order per user (or a CRDT); both are the wrong
-weight for a client-only dashboard where the loser of a race can re-drag one card.
+**Given up.** The lock makes the last-write-wins outcome deterministic, not a merge — a genuine
+same-instant collision across two tabs still discards one tab's intended order rather than
+combining both. `favs` deliberately keeps the simpler, unlocked scheme; losing a pin race is
+cheap to notice and redo, unlike losing a multi-step reorder.
 
 ### T4 — Resilience vs. simplicity — IMPLEMENTED
 

@@ -46,6 +46,33 @@
 //   - The per-asset contract above (`asset-card`, `usd-value`, `pin-button`,
 //     `drag-handle`, ...) is identical in both views — table view renders one
 //     `[data-testid="asset-card"]` per row rather than a second markup shape.
+//
+// Scope toggle + windowing (AC-83..96, T2/T3; ADR 0006 + ADR 0007):
+//   - Toolbar: [data-testid="scope-toggle"] wraps exactly two option controls,
+//     [data-testid="scope-toggle-curated"] and [data-testid="scope-toggle-all"],
+//     each with an accessible name containing "Curated"/"All" respectively and
+//     an `aria-pressed` reflecting the active option. Selecting "All" forces
+//     `data-view="table"` and disables [data-testid="view-toggle-cards"]
+//     (`.disabled === true`); returning to "Curated" restores the
+//     previously-persisted view choice and re-enables it.
+//   - Table view's scroll container: [data-testid="table-viewport"] (a fixed-
+//     height, `overflow: auto` element — tests may set `.style.height`
+//     explicitly and dispatch a `scroll` event after setting `.scrollTop`).
+//     Inside it, [data-testid="window-spacer-top"] and
+//     [data-testid="window-spacer-bottom"] each carry a `data-row-count`
+//     attribute (a stringified integer) giving how many un-rendered rows they
+//     stand in for, so `topSpacer.data-row-count + rendered asset-card count +
+//     bottomSpacer.data-row-count` always equals the active scope's total
+//     symbol count. At most ~40 `[data-testid="asset-card"]` rows are ever in
+//     the DOM at once regardless of universe size.
+//   - Uncurated symbols (All scope only) render with `data-name` equal to
+//     their own symbol code (no curated display name) and no
+//     `[data-testid="drag-handle"]` unless pinned; pinning one adds a handle.
+//   - Reorder persistence moves to a new versioned key,
+//     `nocturne.rates.order.v2` (`{ schemaVersion, updatedAt, order }`);
+//     `nocturne.rates.order.v1` (bare `string[]`) is left in place for
+//     rollback safety and is only ever migrated *from*, never written to,
+//     once a `.v2` record exists.
 
 export interface KVStore {
   getItem(key: string): string | null
@@ -109,6 +136,8 @@ export const FAVS_KEY = 'nocturne.rates.favs.v1'
 export const LEASE_KEY = 'nocturne.rates.lease.v1'
 export const BUDGET_KEY = 'nocturne.rates.budget.v1'
 export const VIEW_KEY = 'nocturne.rates.view.v1'
+export const SCOPE_KEY = 'nocturne.rates.scope.v1'
+export const ORDER_V2_KEY = 'nocturne.rates.order.v2'
 
 export type FakeFetchedRates = {
   rates: Record<string, { usd: number; btc: number }>
@@ -187,4 +216,35 @@ export function reorderExpectation(
 
 export function accessibleName(element: Element): string {
   return element.getAttribute('aria-label') ?? element.textContent ?? ''
+}
+
+/**
+ * Structural stand-in for order-store.ts's `LocksPort` (ADR 0007):
+ * `{ request<T>(name, fn): Promise<T> }`, mirroring `navigator.locks.request`.
+ * Not imported from order-store.ts (which doesn't exist yet) — TS's
+ * structural typing means this shape matches it regardless.
+ */
+export interface LocksPort {
+  request<T>(name: string, fn: () => Promise<T> | T): Promise<T>
+}
+
+/**
+ * A `LocksPort` that serializes every `request()` call onto one FIFO queue,
+ * regardless of submission timing — simulating `navigator.locks.request`'s
+ * mutual exclusion deterministically, with no real timers or races. Used by
+ * order-store.test.ts's AC-93 to prove a strictly-greater-`updatedAt` write
+ * guard (not "last call wins") produces the deterministic outcome.
+ */
+export function createSerializingLocksPort(): LocksPort {
+  let queue: Promise<unknown> = Promise.resolve()
+  return {
+    request<T>(_name: string, fn: () => Promise<T> | T): Promise<T> {
+      let result = queue.then(() => fn())
+      queue = result.then(
+        () => undefined,
+        () => undefined,
+      )
+      return result
+    },
+  }
 }

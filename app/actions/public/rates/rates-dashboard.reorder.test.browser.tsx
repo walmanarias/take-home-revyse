@@ -5,6 +5,7 @@ import { render } from 'remix/ui/test'
 import {
   FAVS_KEY,
   ORDER_KEY,
+  ORDER_V2_KEY,
   T0,
   cardEntries,
   cardOrder,
@@ -95,7 +96,9 @@ describe('RatesDashboard: keyboard reorder', () => {
     ;[expected[0], expected[1]] = [expected[1]!, expected[0]!]
 
     assert.deepEqual(cardOrder(result), expected)
-    assert.deepEqual(JSON.parse(kv.getItem(ORDER_KEY) ?? '[]'), expected)
+    // Persistence moved to the order.v2 record per the T3 amendment (AC-92..96);
+    // order.v1 is migrated-from only, never written once a v2 record exists.
+    assert.deepEqual(JSON.parse(kv.getItem(ORDER_V2_KEY) ?? '{}').order, expected)
     assert.ok((result.$('[data-testid="reorder-announcer"]')?.textContent ?? '').length > 0)
   })
 
@@ -107,6 +110,7 @@ describe('RatesDashboard: keyboard reorder', () => {
     await result.act(() => (result.$('[data-testid="sort-custom"]') as HTMLButtonElement).click())
 
     let before = cardOrder(result)
+    let v2Before = kv.getItem(ORDER_V2_KEY)
     let firstHandle = result.$('[data-testid="drag-handle"]') as HTMLElement
 
     await result.act(() => {
@@ -115,6 +119,8 @@ describe('RatesDashboard: keyboard reorder', () => {
     })
 
     assert.deepEqual(cardOrder(result), before)
+    // No reorder write: the v2 record is byte-identical and legacy v1 is never written.
+    assert.equal(kv.getItem(ORDER_V2_KEY), v2Before)
     assert.equal(kv.getItem(ORDER_KEY), null)
   })
 })

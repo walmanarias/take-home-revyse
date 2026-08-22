@@ -79,9 +79,19 @@ required "Tension Decisions" section.
 - FR-15 — Every interactive control is keyboard-operable, carries an accessible name, and shows
   a 2px accent `:focus-visible` ring with 2px offset; the staleness label carries
   `aria-live="polite"`.
-- FR-16 — The repository `README.md` contains a "Tension Decisions" section covering T1–T5 (T1,
-  T4, T5 marked implemented; T2, T3 marked decided-only), content adapted from
-  `designs/README.md`.
+- FR-16 — The repository `README.md` contains a "Tension Decisions" section covering T1–T5,
+  all five marked implemented, content adapted from `designs/README.md`. *(Amended 2026-08-21;
+  originally T2/T3 were decided-only.)*
+- FR-17 — *(T2 amendment, ADR 0006)* A persisted Curated 15 / All scope toggle; "All" renders
+  every symbol from the already-fetched response (symbol-as-name for uncurated, fiat included,
+  zero extra requests) in a windowed, fixed-row-height table (cards disabled), with
+  index-driven filtering over the full universe; history/Δ tracked only for curated ∪ pinned;
+  reorder bounded to curated ∪ pinned.
+- FR-18 — *(T3 amendment, ADR 0007)* Order durability via a versioned
+  `{ schemaVersion: 2, updatedAt, order }` record under `nocturne.rates.order.v2` (v1 migrated,
+  kept for rollback), written through an injectable `LocksPort` (`navigator.locks` in
+  production, safe fallback without), adopted cross-tab by strictly-newer `updatedAt` with ties
+  favoring the stored value; gestures stay optimistic.
 
 ## Acceptance criteria (Given/When/Then)
 
@@ -252,7 +262,8 @@ E2E layer exists in this pass — see Out of scope.
 45. **AC-45 (component)** — Given sort is `"custom"` and keyboard focus is on symbol `X`'s drag
     handle (not first in master order), when the user presses `ArrowUp`, then `reorder()` is
     invoked moving `X` one position earlier in master order, the new order persists to
-    `nocturne.rates.order.v1`, and an `aria-live="polite"` region announces the move.
+    `nocturne.rates.order.v2` *(originally v1; superseded by the T3 amendment, AC-92..96)*,
+    and an `aria-live="polite"` region announces the move.
 46. **AC-46 (component)** — Given sort is `"custom"` and focus is on the first symbol's drag
     handle, when the user presses `ArrowUp`, then the master order is unchanged and no reorder
     write occurs.
@@ -363,10 +374,9 @@ E2E layer exists in this pass — see Out of scope.
 74. **AC-74 (unit)** — Given the repository's `README.md`, when read from disk, then it
     contains a `## Tension Decisions` heading (or equivalent) with five subsections identifiable
     as T1, T2, T3, T4, and T5.
-75. **AC-75 (unit)** — Given the same `README.md`, then T1, T4, and T5's subsections are marked
-    as implemented (e.g. an "IMPLEMENTED" marker) and T2 and T3's subsections are marked as
-    decided-only (e.g. "decided, not implemented"), matching `designs/README.md`'s existing T1–T5
-    content.
+75. **AC-75 (unit)** — Given the same `README.md`, then all five subsections T1–T5 are marked
+    as implemented (e.g. an "IMPLEMENTED" marker). *(Amended 2026-08-21 with the T2/T3
+    implementation, AC-83..96: originally required T2/T3 to be marked decided-only.)*
 
 ## Edge cases & error handling
 
@@ -400,12 +410,15 @@ E2E layer exists in this pass — see Out of scope.
 
 ## Out of scope
 
-- **T2 — virtualization for 500+ assets.** Decided-only per `designs/README.md`; no AC exercises
-  a list beyond the 15 curated assets. README documents the plan (AC-74/75 verify only that the
-  documentation exists).
-- **T3 — locks/versioned order records.** Decided-only; today's optimistic synchronous write
-  (AC-48–AC-51) is the full extent of what's tested. No AC covers `navigator.locks` or a
-  versioned `{ version, updatedAt, order }` record.
+- ~~**T2 — virtualization for 500+ assets.**~~ *In scope since the 2026-08-21 T2/T3 amendment
+  (AC-83..91, ADR 0006): Curated/All scope toggle, windowed table rendering, bounded history.*
+- ~~**T3 — locks/versioned order records.**~~ *In scope since the same amendment (AC-92..96,
+  ADR 0007): `order.v2` versioned record, injectable `LocksPort`, LWW adoption.*
+- **Full-list reordering.** Reorder (drag/keyboard) remains bounded to curated ∪ pinned
+  symbols; arbitrary reordering of the 500+ uncurated tail is not supported (pin a symbol to
+  make it reorderable).
+- **Display-name metadata for uncurated symbols.** Symbol-as-name fallback per ADR 0006; no
+  names endpoint is called (would spend T1 budget) and no hand-maintained name map is kept.
 - **Cross-device order/favourites sync.** Explicitly out of scope; `localStorage` is
   per-browser-profile by design.
 - **Real multi-browser-tab E2E.** Per ADR 0004, cross-tab races (lease, budget, cache adoption)
@@ -417,8 +430,8 @@ E2E layer exists in this pass — see Out of scope.
 
 ## Definition of Done
 
-- [ ] Every AC-1..AC-75 maps to at least one passing test at its tagged layer (unit / router /
-      component).
+- [ ] Every AC-1..AC-96 (including all Amendments) maps to at least one passing test at its
+      tagged layer (unit / router / component).
 - [ ] No (E2E) tests are required for this feature (see Out of scope); if a future pass adds
       real-browser coverage it is additive, not a gate here.
 - [ ] `npm test` passes with zero failing/skipped tests among the above.
@@ -475,3 +488,68 @@ QA per CONV-testing-4, not by component assertions.
 82. **AC-82 (component)** — Given any combination of filter text, sort mode, pins, and a
     custom order, when the user switches view in either direction, then all of that state is
     preserved unchanged (no resets, no persistence writes other than the view key).
+
+**T2 + T3 implementation (user-requested scope addition, 2026-08-21; ADR 0006 + ADR 0007).**
+Scope semantics: "Curated 15" (default) shows `currencies.ts`'s list; "All" shows every symbol
+in the already-fetched Coinbase response (zero extra requests — T1 untouched), uncurated
+symbols display symbol-as-name, fiat included. "All" forces and locks table view (cards cannot
+window a reflowing grid). Under "My order" in All scope: pinned symbols first (master-order
+among themselves), then remaining curated in master order, then uncurated alphabetically by
+symbol. Pin is available on every row; pinned symbols join the reorderable + history-tracked
+set (`tracked = curated ∪ favs`). Drag/keyboard handles exist only on curated or pinned rows.
+Windowed-scroll *smoothness* and drag edge auto-scroll are validated by visual QA per
+CONV-testing-4.
+
+83. **AC-83 (unit)** — Given `computeWindow({ rowHeight: H, viewportHeight: V, scrollTop: S,
+    total: N, overscan: O })`, then it returns `start = max(0, floor(S/H) − O)`,
+    `end = min(N, ceil((S+V)/H) + O)`, `topPad = start·H`, `bottomPad = (N − end)·H` — verified
+    with concrete values (e.g. H=38, V=600, S=1900, N=300, O=5).
+84. **AC-84 (unit)** — Given boundary inputs, `computeWindow` clamps: `S = 0` → `start = 0`,
+    `topPad = 0`; `S` at maximum scroll → `end = N`, `bottomPad = 0`; `N·H ≤ V` → the full
+    range renders with both pads `0`; `N = 0` → empty range, both pads `0`, nothing throws.
+85. **AC-85 (component)** — Given a first visit, then the toolbar exposes a scope toggle
+    (Curated 15 · All) with accessible names, curated active by default; a choice persists to
+    `nocturne.rates.scope.v1` via the validating helper, and a corrupt/unknown persisted value
+    falls back to curated without throwing.
+86. **AC-86 (component)** — Given a fetched response containing 300 symbols and scope All,
+    then the list's total (spacer-inclusive) row count reflects all 300, the filter match
+    counter's denominator becomes the full count, and an uncurated row renders its symbol as
+    its display name with Δ `—` (untracked ⇒ no history).
+87. **AC-87 (component)** — Given scope All is selected, then `data-view="table"` is forced
+    and the Cards view option is disabled; when scope returns to Curated, the previously
+    persisted view choice is restored and Cards re-enables.
+88. **AC-88 (component)** — Given 300 symbols in All scope inside a fixed-height scroll
+    viewport, then the number of rendered asset rows in the DOM is at most 40 (window +
+    overscan), top/bottom spacer heights preserve the full scroll extent, and after
+    programmatically scrolling the container the rendered slice's first visible symbol
+    advances accordingly.
+89. **AC-89 (component)** — Given All scope and filter text, then matches come from the FULL
+    symbol list via the prebuilt lowercase index (a query matching only an uncurated symbol
+    finds it), the empty state renders for zero matches, and clearing the filter restores the
+    windowed full list.
+90. **AC-90 (component)** — Given All scope, then drag handles and `ArrowUp`/`ArrowDown`
+    reordering exist only on curated or pinned rows (uncurated rows expose no draggable
+    handle); pinning an uncurated symbol makes its row reorderable; curated-scope reorder
+    semantics (AC-41..46) are unchanged.
+91. **AC-91 (unit)** — Given `appendHistory(history, rates, trackedSymbols)`, then samples are
+    recorded only for symbols in `trackedSymbols` (48-FIFO behavior for tracked symbols
+    unchanged), untracked symbols gain no entries, and previously-tracked symbols' existing
+    entries are preserved untouched when they leave the tracked set.
+92. **AC-92 (unit)** — Given only legacy `nocturne.rates.order.v1` (bare `string[]`) exists,
+    when the order store reads, then it returns the validated order, writes a
+    `nocturne.rates.order.v2` record `{ schemaVersion: 2, updatedAt: clock(), order }`, and
+    leaves `order.v1` intact (rollback safety).
+93. **AC-93 (unit)** — Given an injected `LocksPort` fake that serializes callers, when two
+    concurrent `writeOrder` calls race, then both run inside the lock, the final stored v2
+    record equals the later writer's order with the later `updatedAt`, and the record is never
+    torn/merged.
+94. **AC-94 (unit)** — Given a local v2 record with `updatedAt = T1`, when an incoming record
+    arrives (storage event) with `updatedAt > T1`, then it is adopted; with `updatedAt ≤ T1`
+    (equal or older), the local record is kept (ties favor the stored value).
+95. **AC-95 (unit)** — Given no `LocksPort` is available (SSR/unsupported browser), then
+    `writeOrder` still persists correctly without throwing; given a corrupt v2 record on read,
+    then the store falls back to v1 migration or the default order without throwing.
+96. **AC-96 (component)** — Given a reorder gesture, then the DOM order updates in the same
+    interaction (optimistic) and the v2 record is written with only the order key touched;
+    given a `storage` event delivering a newer v2 record from another tab, then the displayed
+    order updates to it without any fetch.

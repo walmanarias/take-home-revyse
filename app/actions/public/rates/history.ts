@@ -6,11 +6,14 @@ export const HISTORY_LIMIT = 48
 export function appendHistory(
   history: Record<string, number[]>,
   newRates: Record<string, { usd: number; btc: number }>,
+  trackedSymbols: readonly string[],
 ): Record<string, number[]> {
   let next: Record<string, number[]> = { ...history }
-  for (let symbol of Object.keys(newRates)) {
+  for (let symbol of trackedSymbols) {
+    let sample = newRates[symbol]
+    if (!sample) continue
     let previous = next[symbol] ?? []
-    next[symbol] = [...previous, newRates[symbol]!.usd].slice(-HISTORY_LIMIT)
+    next[symbol] = [...previous, sample.usd].slice(-HISTORY_LIMIT)
   }
   return next
 }

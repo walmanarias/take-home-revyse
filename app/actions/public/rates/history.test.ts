@@ -4,10 +4,14 @@ import { describe, it } from 'remix/test'
 import { appendHistory, computeDelta } from './history.ts'
 
 describe('history.ts: appendHistory()', () => {
+  // Mechanical update only (per the T2 scope addition, AC-91): `appendHistory`
+  // grows a third `trackedSymbols` param. These two calls now pass one so
+  // they keep compiling once that param exists — the assertions below are
+  // unchanged from before the amendment.
   it('AC-65-unit keeps only the most recent 48 of many sequential samples (FIFO)', () => {
     let history: Record<string, number[]> = {}
     for (let i = 0; i < 50; i++) {
-      history = appendHistory(history, { BTC: { usd: 100 + i, btc: 1 } })
+      history = appendHistory(history, { BTC: { usd: 100 + i, btc: 1 } }, ['BTC'])
     }
 
     assert.equal(history.BTC?.length, 48)
@@ -18,10 +22,33 @@ describe('history.ts: appendHistory()', () => {
   it('AC-65-unit only appends symbols present in the new rates, leaving others untouched', () => {
     let history = { ETH: [1, 2, 3] }
 
-    let next = appendHistory(history, { BTC: { usd: 100, btc: 1 } })
+    let next = appendHistory(history, { BTC: { usd: 100, btc: 1 } }, ['BTC', 'ETH'])
 
     assert.deepEqual(next.ETH, [1, 2, 3])
     assert.deepEqual(next.BTC, [100])
+  })
+})
+
+describe('history.ts: appendHistory() — trackedSymbols (T2 scope addition)', () => {
+  it('AC-91 records samples only for symbols in trackedSymbols; untracked symbols gain no entries', () => {
+    let history: Record<string, number[]> = {}
+
+    let next = appendHistory(
+      history,
+      { BTC: { usd: 100, btc: 1 }, DOGE: { usd: 0.1, btc: 0.000001 } },
+      ['BTC'],
+    )
+
+    assert.deepEqual(next.BTC, [100])
+    assert.equal(next.DOGE, undefined)
+  })
+
+  it("AC-91 preserves a previously-tracked symbol's existing entries untouched when it leaves the tracked set", () => {
+    let history = { BTC: [100, 101, 102] }
+
+    let next = appendHistory(history, { BTC: { usd: 200, btc: 1 } }, [])
+
+    assert.deepEqual(next.BTC, [100, 101, 102])
   })
 })
 

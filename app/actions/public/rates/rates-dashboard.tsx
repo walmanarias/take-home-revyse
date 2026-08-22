@@ -28,13 +28,24 @@ import {
   writeCache,
 } from './cache.ts'
 import { type FetchedRates, fetchRates } from './coinbase.ts'
-import { DISPLAY_NAMES, SYMBOLS } from './currencies.ts'
+import { SYMBOLS, displayNameFor } from './currencies.ts'
 import { appendHistory, computeDelta } from './history.ts'
 import { createLeaseStore } from './lease.ts'
 import { reorder } from './order.ts'
+import {
+  ORDER_V2_KEY,
+  adoptOrderRecord,
+  isOrderRecord,
+  readOrderRecord,
+  writeOrder,
+  type LocksPort,
+  type OrderRecord,
+} from './order-store.ts'
 import { formatBtc, formatDelta, formatUsd } from './format.ts'
-import { type KVStore, readJSON, readOrder, writeJSON } from './persisted.ts'
+import { type KVStore, readJSON, writeJSON } from './persisted.ts'
+import { buildSearchIndex, matchesQuery } from './search-index.ts'
 import { type SortMode, sortSymbols } from './sort.ts'
+import { computeWindow } from './window.ts'
 import {
   autoLabelCss,
   badgeCss,
@@ -77,6 +88,7 @@ import {
   tableInnerCss,
   tableRowCss,
   tableTrendCellCss,
+  tableViewportCss,
   tableWrapCss,
   titleRowCss,
   titlesCss,
@@ -86,24 +98,35 @@ import {
   visuallyHiddenCss,
 } from './styles.ts'
 
-const NAMES = DISPLAY_NAMES as Record<string, string>
 const ALL_SYMBOLS: string[] = [...SYMBOLS]
 
-const ORDER_KEY = 'nocturne.rates.order.v1'
 const FAVS_KEY = 'nocturne.rates.favs.v1'
 const VIEW_KEY = 'nocturne.rates.view.v1'
+const SCOPE_KEY = 'nocturne.rates.scope.v1'
 
 type ViewMode = 'cards' | 'table'
+type Scope = 'curated' | 'all'
+
+// Windowing (ADR 0006, T2): rows are a fixed height so `computeWindow` never
+// measures the DOM. `DEFAULT_VIEWPORT_HEIGHT_PX` matches `tableViewportCss`'s
+// own default height and seeds the very first render, before any real
+// `scroll` event has reported the viewport's actual `clientHeight`.
+const ROW_HEIGHT_PX = 40
+const OVERSCAN = 5
+const DEFAULT_VIEWPORT_HEIGHT_PX = 480
+const AUTO_SCROLL_EDGE_PX = 32
+const AUTO_SCROLL_STEP_PX = 18
 
 // The leaf pieces `renderCard` builds once per asset — shared, unmodified,
 // between whichever container branch (table row / card tile) assembles them,
 // so event wiring/data-testid/aria stay a single source of truth regardless
-// of `currentView`.
+// of `currentView`. `dragHandle` is `null` for an untracked "All"-scope row
+// (AC-90) — every other leaf always renders.
 interface CardLeaves {
   badge: JSX.Element
   titles: JSX.Element
   pinButton: JSX.Element
-  dragHandle: JSX.Element
+  dragHandle: JSX.Element | null
   usdValue: JSX.Element
   btcValue: JSX.Element
   deltaValue: JSX.Element
@@ -135,28 +158,47 @@ export interface RatesDashboardProps {
   kv?: KVStore
   clock?: () => number
   fetchImpl?: () => Promise<FetchedRates>
+  // Test/production seam, like kv/clock/fetchImpl: `RatesDashboard` itself
+  // never reaches for `navigator.locks` on its own — `RatesDashboardEntry`
+  // (the production clientEntry wrapper) is the one place that constructs a
+  // real `LocksPort` and passes it down. Left unset, `writeOrder` takes its
+  // fully-synchronous unlocked path (AC-95) — correct in tests (which never
+  // supply one) and a safe, documented degrade in a browser without the Web
+  // Locks API.
+  locks?: LocksPort
 }
 
 export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let kv = handle.props.kv ?? createDefaultKv()
   let clock = handle.props.clock ?? Date.now
   let fetchImpl = handle.props.fetchImpl ?? (() => fetchRates())
+  let locksPort = handle.props.locks
 
   let tabId = randomTabId()
   let budgetStore = createBudgetStore(kv, clock)
   let leaseStore = createLeaseStore(kv, clock)
-
-  let order = readOrder(kv, ORDER_KEY, ALL_SYMBOLS, ALL_SYMBOLS)
-  let favs = readJSON<string[]>(kv, FAVS_KEY, [], isStringArray).filter((symbol) =>
-    ALL_SYMBOLS.includes(symbol),
-  )
 
   let cache = readCache(kv)
   let rates: Record<string, { usd: number; btc: number }> | null = cache?.rates ?? null
   let fetchedAt: number | null = cache?.fetchedAt ?? null
   let history: Record<string, number[]> = cache?.history ?? {}
 
+  // A previously-pinned uncurated symbol (ADR 0006) is only "valid" to keep
+  // across a reload if we have some evidence it's a real symbol — the
+  // last-known-good cache's own fetched universe is the best guess available
+  // synchronously at setup, before any fetch has run this session.
+  let knownUniverseAtSetup = rates ? Object.keys(rates) : []
+  let favs = readJSON<string[]>(kv, FAVS_KEY, [], isStringArray).filter(
+    (symbol) => ALL_SYMBOLS.includes(symbol) || knownUniverseAtSetup.includes(symbol),
+  )
+
+  let validSymbolsForOrder = Array.from(new Set([...ALL_SYMBOLS, ...favs]))
+  let orderRecord = readOrderRecord(kv, validSymbolsForOrder, clock)
+  let order = orderRecord.order
+  let orderUpdatedAt = orderRecord.updatedAt
+
   let view = readJSON<ViewMode>(kv, VIEW_KEY, 'cards', isViewMode)
+  let scope = readJSON<Scope>(kv, SCOPE_KEY, 'curated', isScope)
 
   let filter = ''
   let sort: SortMode = 'custom'
@@ -170,6 +212,19 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   let overSym: string | null = null
   let announce = ''
   let started = false
+
+  // Windowing (ADR 0006, T2) — only meaningful in "All" scope's forced table
+  // view; seeded with a default viewport height and refreshed by the real
+  // `scroll` handler once the viewport is mounted and measurable.
+  let scrollTop = 0
+  let viewportHeightPx = DEFAULT_VIEWPORT_HEIGHT_PX
+  let autoScrollDirection: -1 | 0 | 1 = 0
+  let autoScrollFrame: number | null = null
+
+  // Search index (ADR 0006, T2) — rebuilt only when the active symbol
+  // universe actually changes (scope toggle, or a fetch introducing symbols
+  // not seen this session), not on every keystroke/render.
+  let searchIndexCache: { key: string; index: Map<string, string> } | null = null
 
   function tick() {
     now = clock()
@@ -199,10 +254,25 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       clearTimeout(initialCheck)
       clearInterval(interval)
       leaseStore.release(tabId)
+      stopAutoScroll()
     })
   }
 
   function onStorage(event: StorageEvent) {
+    if (event.key === ORDER_V2_KEY) {
+      if (event.newValue == null) return
+      let incoming = parseOrderRecordPayload(event.newValue)
+      if (!incoming) return
+      let local: OrderRecord = { schemaVersion: 2, updatedAt: orderUpdatedAt, order }
+      let adopted = adoptOrderRecord(local, incoming)
+      if (adopted === incoming) {
+        order = incoming.order
+        orderUpdatedAt = incoming.updatedAt
+        handle.update()
+      }
+      return
+    }
+
     if (event.key !== CACHE_KEY || event.newValue == null) return
     let parsed = parseCachePayload(event.newValue)
     if (!parsed || parsed.fetchedAt === fetchedAt) return
@@ -238,7 +308,10 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       now = clock()
       fetchedAt = result.fetchedAt
       rates = { ...(rates ?? {}), ...result.rates }
-      history = appendHistory(history, result.rates)
+      // Bounded history/storage (ADR 0006): only the curated 15 plus current
+      // pins accumulate session samples, regardless of how many symbols
+      // Coinbase's response carries.
+      history = appendHistory(history, result.rates, Array.from(computeTrackedSet()))
       failures = 0
       writeCache(kv, { rates, fetchedAt, history })
     } catch {
@@ -250,8 +323,15 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   }
 
   function togglePin(symbol: string) {
-    favs = favs.includes(symbol) ? favs.filter((s) => s !== symbol) : [...favs, symbol]
+    let wasPinned = favs.includes(symbol)
+    favs = wasPinned ? favs.filter((s) => s !== symbol) : [...favs, symbol]
     writeJSON(kv, FAVS_KEY, favs)
+    // Pinning an uncurated symbol joins the reorderable/history-tracked set
+    // (ADR 0006): it needs a slot in `order` to become draggable. Curated
+    // symbols are always already present, so this never fires for them.
+    if (!wasPinned && !order.includes(symbol)) {
+      persistOrder([...order, symbol])
+    }
     handle.update()
   }
 
@@ -265,10 +345,90 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     handle.update()
   }
 
+  function setScope(mode: Scope) {
+    if (scope === mode) return
+    // Only the scope key is written here — filter/sort/pins/order/view are
+    // untouched, matching setView's own persistence discipline.
+    scope = mode
+    writeJSON(kv, SCOPE_KEY, scope)
+    handle.update()
+  }
+
+  function persistOrder(nextOrder: string[]) {
+    order = nextOrder
+    // writeOrder's tie-break ("a tie favors the value already in storage",
+    // ADR 0007) is meant for a genuine cross-tab collision — not for this
+    // tab's own next deliberate write landing on the same clock tick as its
+    // last one (a real risk with an injected/fixed clock, and possible even
+    // with a real one at sub-millisecond precision). Strictly increasing
+    // `updatedAt` for this tab's own writes keeps every local reorder from
+    // ever losing to its own prior write.
+    orderUpdatedAt = Math.max(clock(), orderUpdatedAt + 1)
+    void writeOrder(kv, { schemaVersion: 2, updatedAt: orderUpdatedAt, order: nextOrder }, locksPort)
+  }
+
+  function computeTrackedSet(): Set<string> {
+    return new Set([...ALL_SYMBOLS, ...favs])
+  }
+
+  function computeUniverse(): string[] {
+    if (scope !== 'all') return ALL_SYMBOLS
+    let fetched = rates ? Object.keys(rates) : []
+    return Array.from(new Set([...ALL_SYMBOLS, ...fetched]))
+  }
+
+  function computeSortedSymbols(universe: string[]): string[] {
+    let deltas: Record<string, number> = {}
+    for (let symbol of universe) {
+      let delta = computeDelta(history[symbol] ?? [])
+      if (delta !== null) deltas[symbol] = delta
+    }
+    // "My order" in All scope (ADR 0006): the reorderable set (`order`,
+    // already curated-plus-pinned in master order) first, then every other
+    // universe symbol alphabetically. sortSymbols' own pin-to-top partition
+    // then yields: pinned (master order) → remaining curated (master order)
+    // → uncurated (alphabetical) — for every sort mode, not just "custom".
+    let symbolsForSort =
+      scope === 'all'
+        ? [...order, ...universe.filter((symbol) => !order.includes(symbol)).sort((a, b) => a.localeCompare(b))]
+        : order
+    return sortSymbols(sort, symbolsForSort, favs, rates, deltas)
+  }
+
+  function getSearchIndex(universe: string[]): Map<string, string> {
+    let key = universe.join(',')
+    if (searchIndexCache && searchIndexCache.key === key) return searchIndexCache.index
+    let index = buildSearchIndex(universe, displayNameFor)
+    searchIndexCache = { key, index }
+    return index
+  }
+
+  function stopAutoScroll() {
+    autoScrollDirection = 0
+    if (autoScrollFrame !== null) {
+      cancelAnimationFrame(autoScrollFrame)
+      autoScrollFrame = null
+    }
+  }
+
+  // Drag edge auto-scroll (ADR 0006): dragging near the windowed viewport's
+  // top/bottom edge nudges `scrollTop` every animation frame, so a user can
+  // drag toward a target currently outside the rendered slice. Visual-QA'd,
+  // not covered by component assertions (scope-semantics preamble).
+  function startAutoScroll(node: HTMLElement, direction: -1 | 1) {
+    if (autoScrollDirection === direction) return
+    stopAutoScroll()
+    autoScrollDirection = direction
+    let step = () => {
+      node.scrollTop += direction * AUTO_SCROLL_STEP_PX
+      autoScrollFrame = requestAnimationFrame(step)
+    }
+    autoScrollFrame = requestAnimationFrame(step)
+  }
+
   function applyReorder(dragged: string, target: string, position: 'before' | 'after') {
-    order = reorder(order, dragged, target, position)
-    writeJSON(kv, ORDER_KEY, order)
-    let name = NAMES[dragged] ?? dragged
+    persistOrder(reorder(order, dragged, target, position))
+    let name = displayNameFor(dragged)
     announce = `Moved ${name} ${position === 'before' ? 'up' : 'down'}, now position ${order.indexOf(dragged) + 1} of ${order.length}.`
     handle.update()
   }
@@ -280,12 +440,6 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     applyReorder(dragged, target, position)
   }
 
-  function matches(symbol: string, query: string): boolean {
-    if (!query) return true
-    let name = (NAMES[symbol] ?? '').toLowerCase()
-    return symbol.toLowerCase().includes(query) || name.includes(query)
-  }
-
   function computeAutoLabel(): string {
     if (!auto) return 'off'
     if (pending) return 'now'
@@ -294,10 +448,16 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     return `${remaining}s`
   }
 
-  // Shared segmented-control button shape used by both the sort and view
-  // toggles: `sortButton`/`viewButton` stay thin, domain-named adapters over
-  // this one markup/event-wiring definition.
-  function segButton(testId: string, label: string, pressed: boolean, onClick: () => void) {
+  // Shared segmented-control button shape used by the sort, view, and scope
+  // toggles: `sortButton`/`viewButton`/`scopeButton` stay thin, domain-named
+  // adapters over this one markup/event-wiring definition.
+  function segButton(
+    testId: string,
+    label: string,
+    pressed: boolean,
+    onClick: () => void,
+    disabled = false,
+  ) {
     return (
       <button
         key={testId}
@@ -305,6 +465,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         data-testid={testId}
         class="focus-ring"
         aria-pressed={pressed}
+        disabled={disabled}
         mix={[focusRingCss, segButtonCss, on('click', onClick)]}
       >
         {label}
@@ -320,13 +481,46 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
   }
 
   function viewButton(mode: ViewMode, label: string) {
-    return segButton(`view-toggle-${mode}`, label, view === mode, () => setView(mode))
+    // "All" scope forces (and locks) table view — cards can't window a
+    // reflowing grid (ADR 0006). The Cards option disables while locked;
+    // Table stays clickable (already the effective view, a harmless no-op).
+    let effective: ViewMode = scope === 'all' ? 'table' : view
+    let disabled = mode === 'cards' && scope === 'all'
+    return segButton(`view-toggle-${mode}`, label, effective === mode, () => setView(mode), disabled)
   }
 
-  function renderCard(symbol: string, dim: boolean, query: string, currentView: ViewMode) {
-    let name = NAMES[symbol] ?? symbol
+  function scopeButton(mode: Scope, label: string) {
+    return segButton(`scope-toggle-${mode}`, label, scope === mode, () => setScope(mode))
+  }
+
+  // Shared between curated-scope table view (unwindowed) and All-scope table
+  // view (windowed) — one header markup definition either way.
+  function renderTableHeader() {
+    return (
+      <div data-testid="table-header" mix={tableHeaderCss}>
+        <span aria-hidden="true" />
+        <span>Asset</span>
+        <span>USD</span>
+        <span>BTC</span>
+        <span>Session Δ</span>
+        <span>Trend</span>
+        <span aria-hidden="true" />
+      </div>
+    )
+  }
+
+  function renderCard(
+    symbol: string,
+    dim: boolean,
+    query: string,
+    currentView: ViewMode,
+    showHandle: boolean,
+  ) {
+    let name = displayNameFor(symbol)
     let rate = rates?.[symbol]
-    let hidden = !matches(symbol, query)
+    let hidden =
+      query.length > 0 &&
+      !(symbol.toLowerCase().includes(query) || name.toLowerCase().includes(query))
     let historyForSymbol = history[symbol] ?? []
     let delta = computeDelta(historyForSymbol)
     let pinned = favs.includes(symbol)
@@ -370,7 +564,10 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         ★
       </button>
     )
-    let dragHandle = (
+    // Drag/keyboard handles exist only on curated or pinned rows (AC-90) —
+    // an untracked "All"-scope row renders no handle at all, not merely a
+    // non-draggable one.
+    let dragHandle = !showHandle ? null : (
       <span
         data-testid="drag-handle"
         class="focus-ring"
@@ -389,6 +586,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
           on('dragend', () => {
             dragSym = null
             overSym = null
+            stopAutoScroll()
             handle.update()
           }),
           on('keydown', (event) => {
@@ -470,6 +668,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         let dragged = dragSym
         dragSym = null
         overSym = null
+        stopAutoScroll()
         if (dragged && dragged !== symbol) applyDrop(dragged, symbol)
         else handle.update()
       }),
@@ -502,16 +701,17 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
       handle.queueTask(() => start())
     }
 
+    let effectiveView: ViewMode = scope === 'all' ? 'table' : view
+    let universe = computeUniverse()
+    let searchIdx = getSearchIndex(universe)
     let query = filter.trim().toLowerCase()
-    let deltas: Record<string, number> = {}
-    for (let symbol of ALL_SYMBOLS) {
-      let delta = computeDelta(history[symbol] ?? [])
-      if (delta !== null) deltas[symbol] = delta
-    }
 
-    let sortedSymbols = sortSymbols(sort, order, favs, rates, deltas)
-    let visibleCount = sortedSymbols.filter((symbol) => matches(symbol, query)).length
+    let sortedSymbols = computeSortedSymbols(universe)
+    let visibleSymbols = sortedSymbols.filter((symbol) => matchesQuery(searchIdx, symbol, query))
+    let visibleCount = visibleSymbols.length
     let hiddenCount = sortedSymbols.length - visibleCount
+
+    let trackedSet = computeTrackedSet()
 
     let tier: Staleness = staleness(fetchedAt, now)
     let dim = tier === 'expired'
@@ -522,8 +722,22 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     let bannerText = computeBanner(tier, rates !== null, failures, formatAge(ageMs))
     let autoLabel = computeAutoLabel()
 
+    // Windowing only applies to All scope's forced table view (ADR 0006) —
+    // curated-scope table view still renders its full (small) list.
+    let windowRange =
+      scope === 'all'
+        ? computeWindow({
+            scrollTop,
+            viewportHeight: viewportHeightPx,
+            rowHeight: ROW_HEIGHT_PX,
+            overscan: OVERSCAN,
+            itemCount: visibleCount,
+          })
+        : null
+    let windowedSymbols = windowRange ? visibleSymbols.slice(windowRange.startIndex, windowRange.endIndex) : []
+
     return (
-      <div data-testid="rates-dashboard" data-view={view} mix={rootCss}>
+      <div data-testid="rates-dashboard" data-view={effectiveView} mix={rootCss}>
         <header mix={headerCss}>
           <div mix={titleRowCss}>
             <h4 mix={h4Css}>Exchange Rates</h4>
@@ -555,7 +769,7 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
             />
             {query && (
               <span data-testid="match-counter" mix={matchCounterCss}>
-                {`${visibleCount}/${ALL_SYMBOLS.length}`}
+                {`${visibleCount}/${universe.length}`}
               </span>
             )}
           </div>
@@ -565,6 +779,11 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
             {sortButton('name', 'Name')}
             {sortButton('usd', 'Price')}
             {sortButton('delta', 'Change')}
+          </div>
+
+          <div role="group" aria-label="Scope" data-testid="scope-toggle" mix={segCss}>
+            {scopeButton('curated', 'Curated 15')}
+            {scopeButton('all', 'All')}
           </div>
 
           <div role="group" aria-label="View" data-testid="view-toggle" mix={segCss}>
@@ -650,24 +869,70 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
           {announce}
         </div>
 
-        {view === 'table' ? (
-          <div mix={tableWrapCss}>
+        {effectiveView === 'cards' ? (
+          <div mix={gridCss}>
+            {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, effectiveView, true))}
+          </div>
+        ) : scope === 'all' && windowRange ? (
+          <div
+            data-testid="table-viewport"
+            mix={[
+              tableViewportCss,
+              on<HTMLElement, 'scroll'>('scroll', (event) => {
+                let node = event.currentTarget
+                let nextScrollTop = node.scrollTop
+                let nextHeight = node.clientHeight || viewportHeightPx
+                let nextRange = computeWindow({
+                  scrollTop: nextScrollTop,
+                  viewportHeight: nextHeight,
+                  rowHeight: ROW_HEIGHT_PX,
+                  overscan: OVERSCAN,
+                  itemCount: visibleCount,
+                })
+                scrollTop = nextScrollTop
+                viewportHeightPx = nextHeight
+                if (
+                  nextRange.startIndex !== windowRange!.startIndex ||
+                  nextRange.endIndex !== windowRange!.endIndex
+                ) {
+                  handle.update()
+                }
+              }),
+              on<HTMLElement, 'dragover'>('dragover', (event) => {
+                if (sort !== 'custom' || !dragSym) return
+                let rect = event.currentTarget.getBoundingClientRect()
+                let y = event.clientY
+                if (y - rect.top < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, -1)
+                else if (rect.bottom - y < AUTO_SCROLL_EDGE_PX) startAutoScroll(event.currentTarget, 1)
+                else stopAutoScroll()
+              }),
+              on<HTMLElement, 'dragleave'>('dragleave', () => stopAutoScroll()),
+              on<HTMLElement, 'drop'>('drop', () => stopAutoScroll()),
+            ]}
+          >
             <div mix={tableInnerCss}>
-              <div data-testid="table-header" mix={tableHeaderCss}>
-                <span aria-hidden="true" />
-                <span>Asset</span>
-                <span>USD</span>
-                <span>BTC</span>
-                <span>Session Δ</span>
-                <span>Trend</span>
-                <span aria-hidden="true" />
-              </div>
-              {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, view))}
+              {renderTableHeader()}
+              <div
+                data-testid="window-spacer-top"
+                data-row-count={String(windowRange.startIndex)}
+                style={{ height: `${windowRange.topSpacerPx}px` }}
+              />
+              {windowedSymbols.map((symbol) =>
+                renderCard(symbol, dim, '', effectiveView, trackedSet.has(symbol)),
+              )}
+              <div
+                data-testid="window-spacer-bottom"
+                data-row-count={String(visibleCount - windowRange.endIndex)}
+                style={{ height: `${windowRange.bottomSpacerPx}px` }}
+              />
             </div>
           </div>
         ) : (
-          <div mix={gridCss}>
-            {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, view))}
+          <div mix={tableWrapCss}>
+            <div mix={tableInnerCss}>
+              {renderTableHeader()}
+              {sortedSymbols.map((symbol) => renderCard(symbol, dim, query, effectiveView, true))}
+            </div>
           </div>
         )}
 
@@ -756,7 +1021,11 @@ export const RatesDashboardEntry = clientEntry(import.meta.url, function RatesDa
   handle: Handle,
 ) {
   void handle
-  return () => <RatesDashboard />
+  // Constructed once per hydration, entirely client-side — never crosses the
+  // clientEntry prop-serialization boundary (this call only ever happens in
+  // the browser, after hydration; `createLocksPort()` itself is SSR-safe).
+  let locks = createLocksPort()
+  return () => <RatesDashboard locks={locks} />
 })
 
 // ----- helpers -----
@@ -785,6 +1054,10 @@ function isViewMode(value: unknown): value is ViewMode {
   return value === 'cards' || value === 'table'
 }
 
+function isScope(value: unknown): value is Scope {
+  return value === 'curated' || value === 'all'
+}
+
 // Reuses cache.ts's own validator (isRatesCache) rather than a second,
 // weaker shape check, so the storage-event adoption path and the mount-time
 // localStorage read agree on exactly what a valid cache payload looks like.
@@ -795,6 +1068,31 @@ function parseCachePayload(raw: string): RatesCache | null {
   } catch {
     // Ignore malformed storage payloads — treated like no update.
     return null
+  }
+}
+
+// Mirrors parseCachePayload's shape: reuse order-store.ts's own validator
+// rather than a second, weaker check.
+function parseOrderRecordPayload(raw: string): OrderRecord | null {
+  try {
+    let value: unknown = JSON.parse(raw)
+    return isOrderRecord(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+// Web Locks API port (ADR 0007): guarded so SSR and browsers without the API
+// silently degrade to writeOrder's unlocked path — no crash, no feature loss
+// beyond the lock's collision protection ("no error page, ever").
+function createLocksPort(): LocksPort | undefined {
+  if (typeof navigator === 'undefined') return undefined
+  let manager = (navigator as unknown as { locks?: LocksPort }).locks
+  if (!manager) return undefined
+  return {
+    request<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+      return manager!.request(name, fn)
+    },
   }
 }
 

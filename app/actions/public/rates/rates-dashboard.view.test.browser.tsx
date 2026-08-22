@@ -4,7 +4,7 @@ import { render } from 'remix/ui/test'
 
 import {
   FAVS_KEY,
-  ORDER_KEY,
+  ORDER_V2_KEY,
   T0,
   VIEW_KEY,
   accessibleName,
@@ -133,7 +133,8 @@ describe('RatesDashboard: view toggle (cards <-> table)', () => {
 
     let expectedAfterDrag = reorderExpectation(orderBeforeDrag, draggedSymbol, targetSymbol, 'after')
     assert.deepEqual(cardOrder(result), expectedAfterDrag)
-    assert.deepEqual(JSON.parse(kv.getItem(ORDER_KEY) ?? '[]'), expectedAfterDrag)
+    // Persistence moved to the order.v2 record per the T3 amendment (AC-92..96).
+    assert.deepEqual(JSON.parse(kv.getItem(ORDER_V2_KEY) ?? '{}').order, expectedAfterDrag)
 
     // Keyboard reorder: identical master-order semantics/persistence to cards view (AC-45).
     let orderBeforeKeyboard = cardOrder(result)
@@ -150,7 +151,7 @@ describe('RatesDashboard: view toggle (cards <-> table)', () => {
       expectedAfterKeyboard[0]!,
     ]
     assert.deepEqual(cardOrder(result), expectedAfterKeyboard)
-    assert.deepEqual(JSON.parse(kv.getItem(ORDER_KEY) ?? '[]'), expectedAfterKeyboard)
+    assert.deepEqual(JSON.parse(kv.getItem(ORDER_V2_KEY) ?? '{}').order, expectedAfterKeyboard)
 
     // Pin: identical contract/persistence to cards view (AC-47).
     let pinButton = result.$('[data-testid="pin-button"]') as HTMLElement
@@ -212,7 +213,9 @@ describe('RatesDashboard: view toggle (cards <-> table)', () => {
     let input = result.$('[data-testid="filter-input"]') as HTMLInputElement
     await result.act(() => setInputValue(input, 'e'))
 
-    let orderBefore = JSON.parse(kv.getItem(ORDER_KEY) ?? '[]')
+    // Raw-string capture of the v2 record: any write (even a same-order rewrite
+    // bumping updatedAt) would fail the byte-equality checks below (AC-82).
+    let orderBefore = kv.getItem(ORDER_V2_KEY)
     let favsBefore = JSON.parse(kv.getItem(FAVS_KEY) ?? '[]')
     let visibleBefore = cardEntries(result)
       .filter((e) => e.hidden !== 'true')
@@ -225,7 +228,7 @@ describe('RatesDashboard: view toggle (cards <-> table)', () => {
     await result.act(() => tableOption.click())
     assert.equal(result.$('[data-testid="rates-dashboard"]')?.getAttribute('data-view'), 'table')
 
-    assert.deepEqual(JSON.parse(kv.getItem(ORDER_KEY) ?? '[]'), orderBefore)
+    assert.equal(kv.getItem(ORDER_V2_KEY), orderBefore)
     assert.deepEqual(JSON.parse(kv.getItem(FAVS_KEY) ?? '[]'), favsBefore)
     assert.deepEqual(
       cardEntries(result)
@@ -247,7 +250,7 @@ describe('RatesDashboard: view toggle (cards <-> table)', () => {
     await result.act(() => cardsOption.click())
     assert.equal(result.$('[data-testid="rates-dashboard"]')?.getAttribute('data-view'), 'cards')
 
-    assert.deepEqual(JSON.parse(kv.getItem(ORDER_KEY) ?? '[]'), orderBefore)
+    assert.equal(kv.getItem(ORDER_V2_KEY), orderBefore)
     assert.deepEqual(JSON.parse(kv.getItem(FAVS_KEY) ?? '[]'), favsBefore)
     assert.deepEqual(
       cardEntries(result)
