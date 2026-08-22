@@ -2,7 +2,7 @@
 
 ## 📋 Summary
 
-Implements the full crypto rates dashboard from the `designs/` handoff on the existing Remix 3 scaffold: 15 curated assets with live USD/BTC rates from Coinbase's public endpoint, filter/sort/pin/drag-reorder, and a cross-tab request budget. The dashboard never shows an error page — last-known-good rates render instantly with tiered staleness (live/stale/expired), and all tabs share one 10-requests/minute budget through a leaky bucket plus a single-poller lease in `localStorage`. Built spec-first: 76 numbered acceptance criteria, each encoded as a failing test before implementation.
+Implements the full crypto rates dashboard from the `designs/` handoff on the existing Remix 3 scaffold: 15 curated assets with live USD/BTC rates from Coinbase's public endpoint, filter/sort/pin/drag-reorder, and a cross-tab request budget. The dashboard never shows an error page — last-known-good rates render instantly with tiered staleness (live/stale/expired), and all tabs share one 10-requests/minute budget through a leaky bucket plus a single-poller lease in `localStorage`. Built spec-first: 82 numbered acceptance criteria, each encoded as a failing test before implementation.
 
 ## 📸 Demo
 
@@ -13,6 +13,7 @@ _Screenshots/videos to be added_
 - ✨ **`app/actions/public/rates/`** — the feature tree: eight pure modules (`coinbase`, `budget`, `lease`, `cache`, `order`, `sort`, `format`, `persisted`, plus `history` and `currencies`) with injected clock/storage/fetch, composed by one hydrated `RatesDashboard` component (`clientEntry` wrapper for serializable-props compliance).
 - 🎨 **`tokens.css` + `styles.ts`** — Nocturne design system ported verbatim as CSS custom properties (incl. new `--color-negative`/`--color-warning`); all component styling via `css()` descriptors referencing tokens only; global `box-sizing: border-box` reset.
 - ✨ **Server-rendered chrome** — `home` route renders the full cold-start dashboard (15 rows of `—` placeholders) with zero network calls and exact SSR/hydration parity.
+- ✨ **Cards ⇄ Table view toggle** — cards by default (brief requirement); the Table option renders the handoff's dense table anatomy (exact column template, fading header hairline) from one shared row renderer, persisted under `nocturne.rates.view.v1` (AC-77..82).
 - 🧪 **Test harness fix** — `npm test` now runs the real `remix test` CLI (the scaffold's `node --test` script never executed `remix/test` suite bodies); `playwright` devDependency added; component tests follow the `*.test.browser.tsx` convention and run in Chromium.
 - 📝 **`README.md`** — required "Tension Decisions" section covering T1–T5 (T1/T4/T5 implemented, T2/T3 decided-only).
 - 📝 **`docs/`** — design brief, ADRs 0001–0005, and the approved spec with amendment protocol.
@@ -27,8 +28,8 @@ _Screenshots/videos to be added_
 
 ## 🧪 Test Coverage
 
-- 84 tests / 84 passing (53 server + 31 browser via `remix test`), `tsc --noEmit` clean.
-- Every AC-1..76 maps to at least one test titled with its AC id; unit tests use injected `KVStore`/clock doubles (deterministic cross-tab race simulation, incl. the documented T1 overdraw race), router tests pin the no-error-page cold start, Chromium component tests cover interaction and rendering.
+- 90 tests / 90 passing (53 server + 37 browser via `remix test`), `tsc --noEmit` clean.
+- Every AC-1..82 maps to at least one test titled with its AC id; unit tests use injected `KVStore`/clock doubles (deterministic cross-tab race simulation, incl. the documented T1 overdraw race), router tests pin the no-error-page cold start, Chromium component tests cover interaction and rendering.
 - Visual QA pass (real browser, 1440/768/480) against the Nocturne fidelity rules; all findings fixed and re-verified.
 
 ## ♿ Accessibility
@@ -39,5 +40,5 @@ _Screenshots/videos to be added_
 
 ## 📑 Spec & Acceptance Criteria
 
-- Spec: `specs/crypto-dashboard.spec.md` — AC-1..75 approved at the gate, AC-76 added via the spec's Amendments section during review.
+- Spec: `specs/crypto-dashboard.spec.md` — AC-1..75 approved at the gate; AC-76 (review finding) and AC-77..82 (user-requested view toggle) added via the spec's Amendments section.
 - Design: `docs/design/crypto-dashboard.md`; decisions: `docs/adr/0001`–`0005` (Remix 3 stack, tokens-as-CSS-asset, native DnD + keyboard path, remix-native test stack, server-chrome/client-hydration split).
