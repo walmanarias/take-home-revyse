@@ -3,7 +3,7 @@
 // composition root already holds, so each rule is unit-testable without a
 // DOM and the root stays a wiring layer (CONV-structure-3).
 
-import { BUDGET_CAP, BUDGET_WINDOW_MS } from './budget.ts'
+import { BUDGET_CAP, type BudgetReading } from './budget.ts'
 import type { Staleness } from './cache.ts'
 
 export const POLL_MS = 8000
@@ -19,8 +19,10 @@ export interface StatusView {
 }
 
 export interface BudgetView {
+  /** Grants still available in the window. */
   whole: number
-  nextTokenIn: number
+  /** Whole seconds until the next slot frees. */
+  slotFreesIn: number
 }
 
 export function formatAge(ms: number): string {
@@ -57,17 +59,14 @@ export function computeBanner(
   return null
 }
 
-export function computeBudgetView(tokens: number): BudgetView {
-  let whole = Math.floor(tokens)
-  let fractional = tokens - whole
-  let nextTokenIn = Math.ceil(((1 - fractional) * (BUDGET_WINDOW_MS / BUDGET_CAP)) / 1000)
-  return { whole, nextTokenIn }
+export function computeBudgetView({ remaining, slotFreesInMs }: BudgetReading): BudgetView {
+  return { whole: remaining, slotFreesIn: Math.ceil(slotFreesInMs / 1000) }
 }
 
 export function formatBudgetLabel(view: BudgetView): string {
   return view.whole >= BUDGET_CAP
     ? `${view.whole}/${BUDGET_CAP} left this minute`
-    : `${view.whole}/${BUDGET_CAP} left this minute · +1 in ${view.nextTokenIn}s`
+    : `${view.whole}/${BUDGET_CAP} left this minute · +1 in ${view.slotFreesIn}s`
 }
 
 export interface AutoLabelInputs {

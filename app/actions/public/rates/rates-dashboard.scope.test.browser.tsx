@@ -117,7 +117,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-86 reflects the full 300-symbol universe (row count, match-counter denominator, uncurated name/Δ) in All scope', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -174,7 +174,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-88 renders at most ~40 rows for a 300-row All-scope list, spacers preserve the scroll extent, and scrolling advances the slice', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -218,7 +218,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-89 filters against the full All-scope universe (an uncurated-only match is found) and restores the windowed list when cleared', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -252,7 +252,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-90 exposes drag handles only on curated/pinned rows in All scope, and pinning an uncurated symbol makes it reorderable', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -287,7 +287,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-99 keeps every table cell in its correct grid column when a row has no drag handle (empty placeholder, not a missing child)', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -324,7 +324,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-101 excludes a pinned uncurated symbol from Curated scope and keeps it pinned when returning to All scope', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -361,7 +361,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 
   it('AC-97 clamps the windowed range against a shrunk item count so matches render immediately without a scroll event', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 
@@ -423,7 +423,7 @@ describe('RatesDashboard: scope toggle (Curated 15 <-> All)', () => {
 describe('RatesDashboard: drag auto-scroll cleanup (T2 hardening)', () => {
   it('AC-102 clears drag state via an always-mounted cleanup listener when the dragged row unmounts before the drag ends', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={fetch300(clock.now)} />)
     t.after(result.cleanup)
 

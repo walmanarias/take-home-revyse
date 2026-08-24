@@ -517,10 +517,12 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
     // AC-100: budgetStore re-reads its own kv record on every call (unlike
     // cache/order/favs/view/scope, captured once as setup-scope state) — the
     // cold default matches exactly what SSR's own `budgetStore.read(now)`
-    // against an empty kv computes, so it's gated here rather than folded
-    // into the snapshot.
-    let budgetState = persistedAdopted ? budgetStore.read(now) : { tokens: BUDGET_CAP, ts: now }
-    let budget = computeBudgetView(budgetState.tokens)
+    // against an empty request log computes, so it's gated here rather than
+    // folded into the snapshot.
+    let budgetReading = persistedAdopted
+      ? budgetStore.read(now)
+      : { remaining: BUDGET_CAP, slotFreesInMs: 0 }
+    let budget = computeBudgetView(budgetReading)
     let bannerText = computeBanner(tier, rates !== null, failures, formatAge(ageMs))
 
     let renderRow = (symbol: string) =>
@@ -617,9 +619,10 @@ export function RatesDashboard(handle: Handle<RatesDashboardProps>) {
         )}
 
         <p mix={footnoteCss}>
-          One tab holds the polling lease and every tab spends from the same 10-requests-per-minute
-          bucket, so opening five tabs costs no more than one. Δ and trend are measured across this
-          session's polls, not a rolling 24h window. Order and pins persist locally.
+          One tab holds the polling lease and every tab spends from the same shared budget of 10
+          requests per rolling minute, so opening five tabs costs no more than one. Δ and trend are
+          measured across this session's polls, not a rolling 24h window. Order and pins persist
+          locally.
         </p>
       </div>
     )

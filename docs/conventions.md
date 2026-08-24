@@ -171,6 +171,28 @@
   the widest input set the feature can actually reach before shipping.
 - From: crypto-dashboard (compliance pass, `format.ts`), 2026-08-22.
 
+### CONV-api-3: State a rate limit in the terms its mechanism actually enforces — and say it the same way everywhere
+- Why: a leaky bucket with capacity `C` and continuous refill of `C` per window bounds the
+  *long-run average* at `C`/window; it does **not** bound the count inside any single sliding
+  window. Starting from a full bucket, a burst of `C` plus refill-paced spends yields up to ~`2C`
+  requests in one window — `budget.ts` (cap 10, +1 token per 6,000ms) permits ~20 requests in a
+  moving 60s span against a stated "10 requests per minute". Pick the mechanism that matches the
+  promise: fixed window or sliding-window log for a hard cap; leaky bucket only when a
+  sustained-average cap *with* burst tolerance is genuinely what is meant.
+- Then say it in the same words in all three places it appears — the NFR/FR, the README
+  trade-off section, and the user-facing copy. `n/10 left this minute` and
+  `aria-label="Requests left this minute"` (`budget-strip.tsx`) assert a fixed-window model the
+  bucket never implemented, so the UI is more specific than the guarantee.
+- Example: measured by an external reviewer — manual refresh spammed in a second tab while the
+  leader polled produced **16 Coinbase requests in one 60-second window** (10 burst in 5.6s, then
+  6 refill-paced). The common path (N tabs behind one lease, ~7.5 req/min) never shows this; only
+  the adversarial path does. AC-7 documented the ~1-request overdraw race but not the window
+  overshoot, which is an order of magnitude larger.
+- Resolved: `budget.ts` is now a sliding-window request log (ADR 0008, AC-107..AC-117), so the
+  stated cap, the mechanism, and every piece of copy finally agree. The convention stands as the
+  general rule, not as an open defect.
+- From: crypto-dashboard (external review, `budget.ts`, `budget-strip.tsx`, FR-9), 2026-08-24.
+
 ## Process / Workflow
 
 ### CONV-process-1: Spec example values must satisfy the tier/condition they're illustrating
@@ -200,3 +222,47 @@
 - Example: AC-65 (50 sequential fetches) tripped `MAX_CASCADING_UPDATES=50` until the test was
   changed to yield a macrotask per cycle.
 - From: crypto-dashboard (process history — AC-65 defect), 2026-08-21.
+
+### CONV-process-4: An NFR counts as "verified by AC-n" only when some AC exercises the bound itself
+- Why: `specs/crypto-dashboard.spec.md` claims "≤10 Coinbase requests/minute app-wide, verified
+  structurally by AC-5–AC-13". Those ACs verify the *machinery underneath* the bound — a spend
+  decrements, a refill lands at 6,000ms, two tabs can overdraw by one — and every one of them
+  passes while the app serves 16 requests in a 60-second window. Nothing counts requests over a
+  moving window under adversarial input, which is the claim. The words "verified structurally"
+  are what stopped the question being asked again.
+- Rule: for each quantified NFR, name the single test that fails if the bound is violated. If it
+  doesn't exist, either write it — drive the adversarial path (burst from a full/idle state,
+  multiple actors, the manual path racing the automatic one) — or reword the NFR down to what is
+  actually verified ("sustained average ≤10/min; bursts up to 20 in a 60s window are permitted").
+- Corollary: the headline claim — whatever the README calls the product's core promise — is the
+  first thing an outside reviewer probes, and the happy path is not where it breaks. Probe your
+  own headline claim adversarially before shipping.
+- From: crypto-dashboard (external review — T1 probe vs. NFR "Performance/budget"), 2026-08-24.
+
+### CONV-process-5: An ADR cites the source of every constraint, and a deviation from the brief states what it costs
+- Why: ADR 0001 records the Remix 3 decision as "superseded by an explicit product/user
+  requirement". That constraint is real *inside this repo* (settled by the repo owner, 2026-08,
+  recorded in `CLAUDE.md` "Stack decision") — but the brief it supersedes (`designs/README.md`)
+  asks for "Remix + React", so a reader outside the repo reads "product requirement" as coming
+  from the brief and finds nothing there. A self-imposed constraint written as an external one
+  turns a defensible trade-off into an apparent misattribution, which costs more credibility than
+  the deviation itself ever would.
+- Rule: name who decided, when, and which artifact records it. Never attribute a constraint to a
+  source that does not contain it. When the decision departs from something the brief actually
+  asked for, add a Consequence stating what the deviation makes *unobservable* — here, every
+  capability the brief specified React to exercise is now undemonstrated, which is a real cost to
+  whoever the brief was written for, not just an ecosystem trade-off.
+- From: crypto-dashboard (external review, ADR 0001 vs `designs/README.md`), 2026-08-24.
+
+### CONV-process-6: Every number in a shipped doc is regenerated from the command that produces it
+- Why: the README advertised "117 tests: unit + router + Chromium component + 1 E2E" against an
+  actual 148 tests / 25 files / 2 E2E, and told a fresh cloner that the first `npm test` run
+  "downloads a Chromium build via the `playwright` devDependency" — `playwright@1.62.1` publishes
+  no install script and ships no `install.js`, so browsers arrive only via
+  `npx playwright install chromium`. Both are small; both are precisely the drift the repo's own
+  docs discipline exists to prevent, and setup instructions are the first thing a reviewer runs.
+- Rule: at `/ship`, re-run the command behind each quantified claim and paste its real output;
+  verify claims about third-party tool behavior against the installed package (`package.json`
+  scripts, the files actually present), not from memory. A number you are not willing to
+  re-verify at ship time should be written unquantified instead.
+- From: crypto-dashboard (external review — README setup/test claims), 2026-08-24.

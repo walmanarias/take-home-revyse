@@ -16,33 +16,47 @@ import {
 import { RatesDashboard } from './rates-dashboard.tsx'
 
 describe('RatesDashboard: budget', () => {
-  it('AC-8 shows 7 filled pips, 3 empty pips, and the "7/10 left this minute" label', async (t) => {
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 7, ts: T0 } })
-    let result = render(<RatesDashboard kv={kv} clock={() => T0} fetchImpl={pendingFetch()} />)
+  it('AC-113 shows 7 filled pips, 3 empty pips, and counts down the oldest grant\'s exit', async (t) => {
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [T0, T0 + 1_000, T0 + 2_000] } })
+    let result = render(
+      <RatesDashboard kv={kv} clock={() => T0 + 20_000} fetchImpl={pendingFetch()} />,
+    )
     t.after(result.cleanup)
 
     let pips = [...result.$$('[data-testid="budget-pip"]')]
     assert.equal(pips.length, 10)
     assert.equal(pips.filter((p) => p.getAttribute('data-filled') === 'true').length, 7)
     assert.equal(pips.filter((p) => p.getAttribute('data-filled') === 'false').length, 3)
-    assert.match(
-      result.$('[data-testid="budget-label"]')?.textContent ?? '',
-      /7\/10 left this minute/,
+    assert.equal(
+      result.$('[data-testid="budget-label"]')?.textContent,
+      '7/10 left this minute · +1 in 40s',
     )
   })
 
-  it('AC-9 disables Refresh and reads "Wait 6s" when the budget is empty', async (t) => {
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 0, ts: T0 } })
-    let result = render(<RatesDashboard kv={kv} clock={() => T0} fetchImpl={pendingFetch()} />)
+  it('AC-114 disables Refresh and reads the true wait for the oldest grant to leave the window', async (t) => {
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: Array.from({ length: 10 }, () => T0) } })
+    let result = render(
+      <RatesDashboard kv={kv} clock={() => T0 + 1_000} fetchImpl={pendingFetch()} />,
+    )
     t.after(result.cleanup)
 
     let button = result.$('[data-testid="refresh-button"]') as HTMLButtonElement
     assert.equal(button.disabled, true)
-    assert.match(button.textContent ?? '', /Wait 6s/)
+    assert.match(button.textContent ?? '', /Wait 59s/)
+  })
+
+  it('AC-117 states the shared cap in the mechanism\'s own terms — a rolling minute, not a bucket', async (t) => {
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
+    let result = render(<RatesDashboard kv={kv} clock={() => T0} fetchImpl={pendingFetch()} />)
+    t.after(result.cleanup)
+
+    let footnote = [...result.$$('p')].map((p) => p.textContent ?? '').join(' ')
+    assert.match(footnote, /10 requests per rolling minute/)
+    assert.doesNotMatch(footnote, /bucket/i)
   })
 
   it('AC-10 ignores a second Refresh click while a fetch is already in flight', async (t) => {
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let calls = 0
     let resolveFetch!: (value: FakeFetchedRates) => void
     let fetchImpl = () =>
@@ -65,8 +79,8 @@ describe('RatesDashboard: budget', () => {
     resolveFetch!({ rates: {}, fetchedAt: T0 })
   })
 
-  it('AC-11 calls fetchImpl exactly once on Refresh and spends one budget token on success', async (t) => {
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+  it('AC-115 calls fetchImpl exactly once on Refresh and logs exactly one grant stamp', async (t) => {
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let calls = 0
     let fetchImpl = async () => {
       calls++
@@ -81,7 +95,7 @@ describe('RatesDashboard: budget', () => {
 
     assert.equal(calls, 1)
     let budget = JSON.parse(kv.getItem(BUDGET_KEY) ?? '{}')
-    assert.equal(budget.tokens, 9)
+    assert.deepEqual(budget.stamps, [T0])
   })
 
   it('AC-12 never calls fetchImpl from a tab that does not hold the poll lease', async (t) => {
@@ -112,7 +126,7 @@ describe('RatesDashboard: budget', () => {
   it('AC-13 reads "off" while auto-refresh is unchecked and shows a countdown once checked', async (t) => {
     let timers = t.useFakeTimers()
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let calls = 0
     let fetchImpl = async () => {
       calls++

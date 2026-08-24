@@ -81,7 +81,7 @@ Two traps specific to this tree:
 
 ## Design Handoff (`designs/`)
 
-`designs/README.md` is the full spec for the dashboard to build: 15 crypto assets with live USD/BTC rates from Coinbase's public endpoint, filter/sort/pin/drag-reorder, a shared 10-requests-per-minute budget across tabs (leaky bucket + single-poller lease in localStorage), and tiered staleness with no error pages ever. Read it before implementing dashboard features — it specifies exact layout, formatting rules, state shape, and the reasoning behind resilience decisions.
+`designs/README.md` is the full spec for the dashboard to build: 15 crypto assets with live USD/BTC rates from Coinbase's public endpoint, filter/sort/pin/drag-reorder, a shared 10-requests-per-minute budget across tabs (the handoff suggests a leaky bucket + single-poller lease in localStorage; the shipped budget is a **sliding-window request log** per ADR 0008 — a bucket caps the average, not the window), and tiered staleness with no error pages ever. Read it before implementing dashboard features — it specifies exact layout, formatting rules, state shape, and the reasoning behind resilience decisions.
 
 - `designs/Crypto Dashboard.dc.html` is a working HTML prototype — a reference for layout, copy, and the budget/lease/staleness/reorder algorithms. Do not port `designs/support.js` (its runtime).
 - `designs/nocturne/styles.css` + `readme.md` are the Nocturne design system. Source all styling from its tokens: dark ground `#161826`, single accent `#9184d9`, outlined buttons only (never filled), headings never past weight 500, no new hex values.

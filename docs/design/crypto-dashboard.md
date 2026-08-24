@@ -21,7 +21,9 @@ cross-session state is browser-local (`localStorage`).
 
 ## Non-functional requirements
 
-- **API budget:** ≤10 requests/minute, app-wide, shared across all tabs (leaky bucket, capacity
+- **API budget:** *(mechanism superseded by ADR 0008 — now a sliding-window request log, so the
+  bound holds inside any 60s window, not just on average)* ≤10 requests/minute, app-wide, shared
+  across all tabs (leaky bucket, capacity
   10, continuous refill at 10/min — `BUDGET_CAP`/`BUDGET_WINDOW_MS` in `budget.ts`). **T2 adds
   zero new request paths** — "All" scope reads the same `fetchRates()` response the leader tab
   already pulls down.
@@ -112,7 +114,7 @@ app/
         currencies.ts              # SYMBOLS, DISPLAY_NAMES, + new displayNameFor() fallback
         coinbase.ts                # fetchRates() — already maps the FULL Coinbase response
         format.ts                  # formatUsd / formatBtc / formatDelta
-        budget.ts                  # leaky-bucket store
+        budget.ts                  # sliding-window request log (ADR 0008; was a leaky bucket)
         lease.ts                   # cross-tab polling lease
         cache.ts                   # last-known-good read/write + staleness tiers
         order.ts                   # reorder(): pure splice math — UNCHANGED by T2/T3

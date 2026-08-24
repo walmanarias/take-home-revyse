@@ -3,11 +3,12 @@
 A single-route Remix 3 dashboard (`/`) listing 15 curated cryptocurrencies with live USD and BTC
 rates from Coinbase's public exchange-rates endpoint. Filter, sort, pin favourites, drag (or
 arrow-key) rows into a persisted custom order, switch between a card grid and a dense table, and
-always see exactly how fresh the numbers are. The app shares one 10-requests-per-minute budget
-across every open tab and never shows an error page.
+always see exactly how fresh the numbers are. The app shares one budget of 10 requests per rolling
+minute across every open tab — enforced as a sliding window, so no 60-second span anywhere ever
+holds more than 10 — and never shows an error page.
 
-- Full functional contract: `specs/crypto-dashboard.spec.md` (AC-1..103)
-- System design + decisions: `docs/design/crypto-dashboard.md`, `docs/adr/0001`–`0007`
+- Full functional contract: `specs/crypto-dashboard.spec.md` (AC-1..117, incl. Amendments)
+- System design + decisions: `docs/design/crypto-dashboard.md`, `docs/adr/0001`–`0008`
 - Original handoff + prototype + Nocturne design system: `designs/`
 
 ## Setup
@@ -21,12 +22,13 @@ npm install
 npm run dev          # http://localhost:44100 (restarts on change)
 npm run hmr          # same port, behind the HMR proxy (server + browser hot reload)
 npm run start        # production mode
-npm test             # 117 tests: unit + router + Chromium component + 1 E2E (remix test)
+npm test             # 153 tests: unit + router + Chromium component + 2 E2E (remix test)
 npm run typecheck    # tsc --noEmit
 ```
 
-`npm test` runs Remix's own `remix test` CLI; the first run downloads a Chromium build via the
-`playwright` devDependency. Run a single file (or glob) with
+`npm test` runs Remix's own `remix test` CLI. Browser and E2E tests need a Chromium build, which
+the `playwright` devDependency does *not* download on install — run `npx playwright install
+chromium` once after `npm install`. Run a single file (or glob) with
 `NODE_ENV=test npx remix test path/to/file.test.ts`. Don't use raw `node --test` — it reports
 the file as one passing test without executing its `remix/test` suite bodies.
 
@@ -52,11 +54,13 @@ the file as one passing test without executing its `remix/test` suite bodies.
 
 ## Decisions & trade-offs
 
-- **Remix 3, not React.** The handoff was written for Remix + React + shadcn/Tailwind/dnd-kit,
-  but this repo is a Remix 3 scaffold, and switching stacks was explicitly off the table. The
+- **Remix 3, not React.** The handoff was written for Remix + React + shadcn/Tailwind/dnd-kit.
+  This repo is a Remix 3 scaffold, and the repo owner settled the stack on Remix 3 in 2026-08
+  (`CLAUDE.md`, "Stack decision") — a self-imposed constraint, not one the handoff asked for. The
   design's *intent* — layout, copy, tokens, and the budget/lease/staleness/reorder algorithms —
-  was ported into Remix 3 idioms (setup-scope state, explicit `handle.update()`, no hooks).
-  (ADR 0001)
+  was ported into Remix 3 idioms (setup-scope state, explicit `handle.update()`, no hooks). The
+  cost is worth stating plainly: nothing here demonstrates React, which is what a "Remix + React"
+  handoff is written to exercise. (ADR 0001)
 - **Tokens as a CSS asset, styling via `css()` descriptors.** Nocturne's `:root` variables ship
   verbatim in `tokens.css`; every component style references `var(--color-*)`, never a literal
   hex. Two semantic tokens (`--color-negative`, `--color-warning`) were added rather than
@@ -89,19 +93,26 @@ gives up.
 
 ### T1 — Freshness vs. rate limits — IMPLEMENTED (chosen)
 
-**Choice.** One shared **leaky-bucket budget** in `localStorage` (`budget.ts`: capacity 10,
-continuous refill at 10/minute) plus a **single-poller lease** (`lease.ts`). Every tab writes a
+**Choice.** One shared **sliding-window request log** in `localStorage` (`budget.ts`: the
+timestamps of granted requests; a request is refused while 10 already fall inside the trailing 60s)
+plus a **single-poller lease** (`lease.ts`). Every tab writes a
 heartbeat claim; only the holder fetches, on an 8s period (7.5 req/min, inside the 12s freshness
 bar with headroom). Other tabs adopt results free via the native `storage` event, so N tabs cost
 the same as one. If the leader closes or freezes, another tab takes over after
-`LEASE_TTL = 2500ms` of silence. Manual refresh spends from the same bucket; when it is empty the
-button reads "Wait Ns" and says why, and ten pips keep the budget visible so throttling never
-looks like a bug.
+`LEASE_TTL = 2500ms` of silence. Manual refresh spends from the same window; when it is full the
+button reads "Wait Ns" — counting down to the moment the oldest request leaves the window — and
+ten pips keep the budget visible so throttling never looks like a bug.
 
-**Given up.** `localStorage` writes are not atomic, so two tabs claiming a token in the same
-millisecond can both win — the bucket can overdraw by ~1 in a rare race (documented in AC-7).
-Accepted because the cap is a soft budget with headroom; the real fix is a server-side proxy that
-owns the key and the quota.
+**Given up.** `localStorage` writes are not atomic, so two tabs reading the same snapshot in the
+same millisecond can both append a stamp and one write clobbers the other — the window can
+overdraw by ~1 per racing pair (AC-116). Accepted because it is bounded and rare; the real fix is a
+server-side proxy that owns the key and the quota.
+
+*This started as a leaky bucket* (capacity 10, continuous refill at 10/min), which caps the
+sustained average but not a sliding window — an external review measured **16 requests in one 60s
+window** by spamming manual refresh in a second tab while the leader polled, against a stated hard
+10/min. The mechanism is now a request log and AC-108 replays that exact probe. See ADR 0008 and
+`docs/curation/2026-08-24-external-review.md`.
 
 ### T2 — Scale vs. interactivity — IMPLEMENTED
 

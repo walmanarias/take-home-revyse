@@ -11,7 +11,7 @@ import { SYMBOLS } from './currencies.ts'
 const SCOPE_KEY = 'nocturne.rates.scope.v1'
 const VIEW_KEY = 'nocturne.rates.view.v1'
 const CACHE_KEY = 'nocturne.rates.cache.v1'
-const BUDGET_KEY = 'nocturne.rates.budget.v1'
+const BUDGET_KEY = 'nocturne.rates.budget.v2'
 
 describe('RatesDashboard: hydration (E2E)', () => {
   it('AC-100 shows persisted All/table/warm-cache state after hydration, with exactly one dashboard tree and no hydration-mismatch console errors', async (t) => {
@@ -53,10 +53,13 @@ describe('RatesDashboard: hydration (E2E)', () => {
           JSON.stringify({ rates, fetchedAt: now - 2000, history }),
         )
 
-        // A partially-spent budget (AC-100 residual): the pip/label text
-        // ("7/10 left this minute") must also match between SSR's cold
-        // default and the adopted persisted value.
-        window.localStorage.setItem(seed.budgetKey, JSON.stringify({ tokens: 7, ts: now }))
+        // A partially-spent budget (AC-100 residual): three granted requests
+        // inside the trailing window, so the adopted pip/label text reads
+        // "7/10 left this minute" where SSR's cold default rendered 10/10.
+        window.localStorage.setItem(
+          seed.budgetKey,
+          JSON.stringify({ stamps: [now - 3000, now - 2000, now - 1000] }),
+        )
       },
       {
         scopeKey: SCOPE_KEY,
@@ -90,6 +93,11 @@ describe('RatesDashboard: hydration (E2E)', () => {
       '[data-testid="asset-card"][data-symbol="BTC"] [data-testid="usd-value"]',
     )
     assert.match(btcUsd ?? '', /78,083/)
+
+    // The adopted budget must actually reach the strip — a seeded record the
+    // store no longer reads would leave this at the cold default's 10/10.
+    let budgetLabel = await page.textContent('[data-testid="budget-label"]')
+    assert.match(budgetLabel ?? '', /^7\/10 left this minute · \+1 in \d+s$/)
 
     let hydrationMismatches = consoleErrors.filter((text) => /Hydration mismatch/i.test(text))
     assert.deepEqual(

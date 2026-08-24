@@ -63,21 +63,26 @@ describe('status.ts: computeBanner()', () => {
 })
 
 describe('status.ts: computeBudgetView()', () => {
-  it('AC-9 floors partial tokens so a fractional token never reads as a spendable one', () => {
-    assert.equal(computeBudgetView(6.9).whole, 6)
-    assert.equal(computeBudgetView(0.99).whole, 0)
+  it('AC-113 carries the request log\'s remaining count through untouched', () => {
+    assert.equal(computeBudgetView({ remaining: 7, slotFreesInMs: 40_000 }).whole, 7)
+    assert.equal(computeBudgetView({ remaining: 0, slotFreesInMs: 59_000 }).whole, 0)
   })
 
-  it('AC-9 counts down the seconds until the next whole token refills', () => {
-    // A full 60s window over 10 tokens => one token every 6s; 30% of the way
-    // into the next token leaves 70% of 6s, rounded up.
-    assert.equal(computeBudgetView(3.3).nextTokenIn, 5)
-    assert.equal(computeBudgetView(3.0).nextTokenIn, 6)
+  it('AC-114 counts down whole seconds until the oldest grant leaves the window, rounding up', () => {
+    assert.equal(computeBudgetView({ remaining: 0, slotFreesInMs: 59_000 }).slotFreesIn, 59)
+    assert.equal(computeBudgetView({ remaining: 3, slotFreesInMs: 40_001 }).slotFreesIn, 41)
+    assert.equal(computeBudgetView({ remaining: 10, slotFreesInMs: 0 }).slotFreesIn, 0)
   })
 
-  it('AC-8 drops the refill hint only when the bucket is completely full', () => {
-    assert.equal(formatBudgetLabel(computeBudgetView(10)), '10/10 left this minute')
-    assert.match(formatBudgetLabel(computeBudgetView(7)), /^7\/10 left this minute · \+1 in \d+s$/)
+  it('AC-113 drops the "+1 in Ns" hint only when the whole window is free', () => {
+    assert.equal(
+      formatBudgetLabel(computeBudgetView({ remaining: 10, slotFreesInMs: 0 })),
+      '10/10 left this minute',
+    )
+    assert.equal(
+      formatBudgetLabel(computeBudgetView({ remaining: 7, slotFreesInMs: 40_000 })),
+      '7/10 left this minute · +1 in 40s',
+    )
   })
 })
 

@@ -94,7 +94,7 @@ describe('RatesDashboard: session Δ', () => {
 describe('RatesDashboard: history + session Δ derivation', () => {
   it('AC-65 keeps only the most recent 48 of many sequential USD samples per symbol (FIFO)', async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let sample = 0
     let symbol = ''
     let fetchImpl = async () => {
@@ -111,7 +111,14 @@ describe('RatesDashboard: history + session Δ derivation', () => {
 
     let refresh = () => result.$('[data-testid="refresh-button"]') as HTMLButtonElement
     for (let i = 0; i < 50; i++) {
-      clock.advance(6000)
+      // Pace the cycles at the app's own 8s poll period. The sliding-window
+      // budget (AC-108) admits a sustained 6s cadence, but at that spacing the
+      // *rendered* remaining is 0 at the instant of every grant — the window is
+      // genuinely full until the oldest stamp ages out a moment later — so the
+      // Refresh button is legitimately disabled between cycles. The real UI
+      // re-enables it on the next 1s `tick()`; this test never runs that timer,
+      // so it paces above the boundary instead of asserting through it.
+      clock.advance(8000)
       await result.act(() => refresh().click())
       // Yield a real macrotask between refresh cycles. Each cycle legitimately renders
       // twice (pending-disabled per AC-10, then resolved), and the UI runtime's
@@ -126,7 +133,7 @@ describe('RatesDashboard: history + session Δ derivation', () => {
 
   it("AC-66 renders \"+10.00%\" when a symbol's usd rises from its first session sample of 100 to 110", async (t) => {
     let clock = manualClock(T0)
-    let kv = createFakeKV({ [BUDGET_KEY]: { tokens: 10, ts: T0 } })
+    let kv = createFakeKV({ [BUDGET_KEY]: { stamps: [] } })
     let symbol = ''
     let usd = 100
     let fetchImpl = async () => {
@@ -164,7 +171,7 @@ describe('RatesDashboard: single `now` tick', () => {
     let clock = manualClock(T0)
     let kv = createFakeKV({
       [CACHE_KEY]: { rates: {}, fetchedAt: T0 - 12_000, history: {} },
-      [BUDGET_KEY]: { tokens: 9, ts: T0 },
+      [BUDGET_KEY]: { stamps: [T0] },
     })
     let result = render(<RatesDashboard kv={kv} clock={clock.now} fetchImpl={pendingFetch()} />)
     t.after(result.cleanup)

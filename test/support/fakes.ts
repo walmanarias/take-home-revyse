@@ -68,6 +68,12 @@
 //   - Uncurated symbols (All scope only) render with `data-name` equal to
 //     their own symbol code (no curated display name) and no
 //     `[data-testid="drag-handle"]` unless pinned; pinning one adds a handle.
+//   - Budget persistence moves to `nocturne.rates.budget.v2`
+//     (`{ stamps: number[] }` — the timestamps of granted requests inside the
+//     trailing 60s window). `nocturne.rates.budget.v1` (the leaky bucket's
+//     `{ tokens, ts }`) is left in place unread, never migrated: a budget is
+//     at most 60s of state, so a client crossing the deploy simply starts a
+//     fresh window.
 //   - Reorder persistence moves to a new versioned key,
 //     `nocturne.rates.order.v2` (`{ schemaVersion, updatedAt, order }`);
 //     `nocturne.rates.order.v1` (bare `string[]`) is left in place for
@@ -134,7 +140,12 @@ export const CACHE_KEY = 'nocturne.rates.cache.v1'
 export const ORDER_KEY = 'nocturne.rates.order.v1'
 export const FAVS_KEY = 'nocturne.rates.favs.v1'
 export const LEASE_KEY = 'nocturne.rates.lease.v1'
-export const BUDGET_KEY = 'nocturne.rates.budget.v1'
+// The active budget key is `.v2` (sliding-window request log,
+// `{ stamps: number[] }`, amendment AC-107..116). `.v1` held the superseded
+// leaky-bucket record `{ tokens, ts }` and is never read or written — kept
+// only so a legacy-record fallback can be exercised.
+export const BUDGET_KEY = 'nocturne.rates.budget.v2'
+export const BUDGET_V1_KEY = 'nocturne.rates.budget.v1'
 export const VIEW_KEY = 'nocturne.rates.view.v1'
 export const SCOPE_KEY = 'nocturne.rates.scope.v1'
 export const ORDER_V2_KEY = 'nocturne.rates.order.v2'

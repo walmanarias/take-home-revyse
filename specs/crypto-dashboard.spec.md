@@ -57,9 +57,12 @@ required "Tension Decisions" section.
   validating helper that falls back to a default instead of throwing on missing, corrupt, or
   version-mismatched data; unknown symbols are dropped from `order`/`favs`, missing valid
   symbols are appended.
-- FR-9 — A shared leaky-bucket budget (capacity 10, continuous refill over a 60,000ms window,
-  i.e. 1 token per 6,000ms) is spent by both the leader's 8s auto-poll and any tab's manual
-  refresh click. When the bucket is empty, Refresh is disabled and its label reads `Wait Ns`.
+- FR-9 *(revised by the 2026-08-24 amendment; was a leaky bucket)* — A shared
+  **sliding-window request log** in `localStorage` grants a request only while fewer than 10
+  grants fall inside the trailing 60,000ms, so no 60-second window anywhere on the timeline ever
+  contains more than 10 requests. It is spent by both the leader's 8s auto-poll and any tab's
+  manual refresh click. When the window is full, Refresh is disabled and its label reads
+  `Wait Ns`, counting down to the moment the oldest grant leaves the window.
 - FR-10 — A single-poller lease (`LEASE_TTL = 2500ms`) elects exactly one tab to poll Coinbase;
   every other tab adopts the leader's fetched cache for free via the native `storage` event and
   never calls `fetchRates` itself.
@@ -397,8 +400,11 @@ E2E layer exists in this pass — see Out of scope.
 
 ## Non-functional requirements
 
-- **Performance/budget:** ≤10 Coinbase requests/minute app-wide, verified structurally by
-  AC-5–AC-13 (no AC exercises real network timing beyond the 7s abort in AC-2).
+- **Performance/budget:** ≤10 Coinbase requests app-wide in *any* trailing 60,000ms window —
+  not merely a 10/min long-run average. The AC that fails if this bound is violated is **AC-108**
+  (the burst probe: 10 grants inside 5.6s, then every attempt refused until the first grant
+  leaves the window). AC-107/109–112 cover the log's accounting, AC-113–117 its UI, copy, and
+  cross-tab behavior. No AC exercises real network timing beyond the 7s abort in AC-2.
 - **Availability/resilience:** no render path may produce a blank page or an uncaught exception
   (AC-25, AC-29, AC-68, AC-69); every degraded state has explicit copy.
 - **Accessibility:** AC-39/40 (drag), AC-45/46 (keyboard reorder), AC-71–AC-73 (focus ring,
@@ -431,10 +437,11 @@ E2E layer exists in this pass — see Out of scope.
 
 ## Definition of Done
 
-- [ ] Every AC-1..AC-103 (including all Amendments) maps to at least one passing test at its
+- [ ] Every AC-1..AC-117 (including all Amendments) maps to at least one passing test at its
       tagged layer (unit / router / component / E2E).
-- [ ] AC-100 is this spec's single (E2E) criterion (added 2026-08-21 for the hydration/reload
-      defect class); all other real-browser coverage remains component-level.
+- [ ] AC-100 and AC-105 are this spec's only (E2E) criteria (added 2026-08-21/2026-08-22 for
+      the hydration/reload and conditional-slot-ordering defect classes); all other real-browser
+      coverage remains component-level.
 - [ ] `npm test` passes with zero failing/skipped tests among the above.
 - [ ] `npm run typecheck` passes with no new errors.
 - [ ] `README.md` contains the "Tension Decisions" section per AC-74/AC-75 (checked by its own
@@ -630,3 +637,76 @@ asset is worth exactly zero bitcoin. Every sub-cent "All"-scope asset hit this.
     against BTC at ~7.1e-11), then `formatBtc` renders `"< 0.00000001 ₿"` rather than a false
     `"0 ₿"`; `formatBtc(0.00000001) === "0.00000001 ₿"` still renders exactly, and an exact
     `btc === 0` still renders `"0 ₿"`.
+
+**Rate-limit window overshoot (defect found in external review, 2026-08-24).** FR-9's leaky
+bucket (capacity 10, continuous refill of 10 tokens per 60,000ms) bounds the *sustained average*
+at 10/min but not the count inside any single 60-second window: from a full bucket a client may
+spend 10 immediately and one more every 6,000ms as the bucket refills — up to ~20 inside a moving
+minute. A reviewer measured **16 Coinbase requests in one 60s window** by spamming manual refresh
+in a second tab while the leader polled. AC-5–AC-13 all passed throughout, because they verify
+token accounting rather than the bound the NFR claims (see CONV-process-4). The UI's
+`n/10 left this minute` copy and `aria-label="Requests left this minute"` asserted a fixed-window
+model the bucket never implemented.
+
+The mechanism is replaced by a sliding-window request log — the persisted record becomes
+`{ stamps: number[] }` (grant timestamps) under a new versioned key `nocturne.rates.budget.v2`,
+and a grant is refused whenever 10 stamps already fall inside the trailing 60,000ms. The v1
+bucket record is not migrated (a budget is at most 60s of state; a client that reloads across the
+deploy starts one fresh window) and is left in place unread for rollback safety, per the same
+policy as `nocturne.rates.order.v1`. AC-107–AC-117 below supersede AC-5, AC-6, AC-7, AC-8, AC-9,
+and AC-11 wherever they conflict: those ACs' *intent* is preserved (spend accounting, the empty
+state's disabled Refresh, the cross-tab overdraw race) but their fixtures and refill arithmetic
+described the bucket and no longer describe the mechanism. AC-10, AC-12, AC-13 and the lease ACs
+are unaffected.
+
+107. **AC-107 (unit)** — Given an empty request log and a clock held at `T0`, when `trySpend` is
+    called repeatedly, then the first 10 calls return `true` and the 11th returns `false`; the
+    persisted record under `nocturne.rates.budget.v2` holds exactly the 10 granted timestamps.
+    (Supersedes AC-5.)
+108. **AC-108 (unit)** — Given an empty log, when 10 grants are taken across `T0..T0 + 5,600`
+    (the burst the external review measured) and further spends are attempted every 6,000ms
+    afterwards, then every attempt before `T0 + 60,000` returns `false`, the first grant after
+    the burst falls at exactly `T0 + 60,000`, and no trailing 60,000ms window over the whole
+    sequence ever contains more than 10 grants. This is the criterion that fails if FR-9's bound
+    is violated. (Supersedes AC-6's refill arithmetic.)
+109. **AC-109 (unit)** — Given 5 grants at `T0` and 5 more at `T0 + 30,000`, when spends are
+    attempted at `T0 + 59,999` then `T0 + 60,000`, then the first returns `false` and the second
+    returns `true` — exactly the 5 oldest stamps have left the window, so 5 grants are available
+    at `T0 + 60,000` and the 6th is refused until `T0 + 90,000`. The window slides per stamp, not
+    per bucket.
+110. **AC-110 (unit)** — Given a log holding 3 stamps whose oldest is at `T0`, when `read(now)`
+    is called at `T0 + 20,000`, then it reports `remaining === 7` and
+    `nextTokenInMs === 40,000` (the oldest stamp's exit from the window); given an empty log,
+    then `remaining === 10` and `nextTokenInMs === 0`.
+111. **AC-111 (unit)** — Given a persisted record containing stamps older than the window, when
+    any spend is granted, then the written record contains only in-window stamps (the log stays
+    bounded and never grows without limit); given a legacy `v1` bucket record
+    (`{ tokens, ts }`), a corrupt value, or a `stamps` array holding non-numeric entries under
+    the `v2` key, then the store falls back to an empty window and nothing throws (FR-8).
+112. **AC-112 (unit)** — Given a persisted stamp dated *after* `now` (the device clock moved
+    backwards, or another tab wrote under a skewed clock), when `trySpend`/`read` run, then that
+    stamp is discarded rather than counted, so a backwards clock jump can never lock the budget
+    out for longer than one window.
+113. **AC-113 (component)** — Given a request log holding 3 in-window stamps, when
+    `RatesDashboard` renders the budget strip, then it shows 7 filled pips, 3 empty pips, and a
+    `7/10 left this minute · +1 in Ns` label whose countdown is the oldest stamp's remaining
+    window time. (Supersedes AC-8.)
+114. **AC-114 (component)** — Given a request log holding 10 stamps written at `T0`, when the
+    Refresh button renders at `T0 + 1,000`, then it is disabled and its label reads `Wait 59s` —
+    the true wait for the oldest grant to leave the window, not a 6s refill tick. (Supersedes
+    AC-9.)
+115. **AC-115 (component)** — Given available budget and no fetch in flight, when the user clicks
+    Refresh, then `fetchImpl` is called exactly once and the persisted `v2` record gains exactly
+    one stamp at the click's timestamp. (Supersedes AC-11.)
+116. **AC-116 (unit)** — Given two `BudgetStore` instances (tab A and tab B) sharing one `KVStore`
+    whose `getItem` returns a fixed pre-write snapshot holding 9 in-window stamps, when both call
+    `trySpend` at the same instant, then both return `true`: `localStorage` writes are not atomic,
+    so the second write clobbers the first and one stamp is lost. The accepted T1 overdraw stays
+    bounded at ~1 request per racing pair — the sliding window fixes the ~2× window overshoot,
+    not the write race, whose only real fix is a server-side proxy that owns the key.
+    (Supersedes AC-7.)
+117. **AC-117 (component)** — Given any budget state, when the dashboard renders its footnote,
+    then the shared cap is stated in the mechanism's own terms — "10 requests per rolling minute"
+    — and never as a bucket. Per CONV-api-3 the FR, the README trade-off, and every piece of
+    user-facing copy describe the same guarantee in the same words; the copy drifting from the
+    mechanism is the defect this amendment exists to close.

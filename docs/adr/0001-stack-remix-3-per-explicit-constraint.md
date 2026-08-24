@@ -35,3 +35,21 @@ not ported as-is.
   `remix/ui/test`).
 - Any future contributor reading `designs/README.md` literally ("Remix + React") needs this ADR
   to understand why the actual implementation looks nothing like a React app.
+
+## Addendum (2026-08-24, after external review)
+
+The Context above says the React approach "was superseded by an explicit product/user
+requirement." That is true *inside this repo* — the stack was settled by the repo owner in 2026-08
+and is recorded in `CLAUDE.md` under "Stack decision" — but it is worth stating precisely, because
+the phrasing invites a reader to look for the requirement in `designs/README.md`, which asks for
+"Remix + React" and imposes nothing about Remix 3. The constraint was **self-imposed relative to
+the handoff**; the decision stands, the attribution needed a source.
+
+One Consequence was missing, and it is the one the handoff's audience cares about:
+
+- **Everything the handoff named React to exercise is now unobservable.** A brief specifying
+  Remix + React is, in part, a request to see React worked with; a non-React implementation cannot
+  answer that, however well it performs otherwise. That cost belongs next to the ecosystem
+  trade-offs listed above, not implied by them.
+
+See `docs/curation/2026-08-24-external-review.md` and CONV-process-5.

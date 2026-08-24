@@ -148,12 +148,12 @@ export function renderToolbar(props: ToolbarProps) {
         disabled={props.pending || budgetSpent}
         title={
           budgetSpent
-            ? `Budget spent — a request frees up in ${budget.nextTokenIn}s`
+            ? `Budget spent — a request frees up in ${budget.slotFreesIn}s`
             : 'Spend one request now'
         }
         mix={[focusRingCss, btnCss, on('click', () => handlers.onRefresh())]}
       >
-        {budgetSpent ? `Wait ${budget.nextTokenIn}s` : 'Refresh'}
+        {budgetSpent ? `Wait ${budget.slotFreesIn}s` : 'Refresh'}
       </button>
 
       <label mix={autoLabelCss}>
